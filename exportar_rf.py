@@ -52,5 +52,10 @@ for e, p in zip(datos['ejemplos'], rf.predict_proba(X)):
 # los dos casos de la demostración del PPT (slide 17): índice 0 y el primer error de la CNN (índice 23)
 datos['casos'] = [{'nombre': nombre, 'idx': i, 'clase': int(ys[i]), 'pix': xs[i].flatten().astype(int).tolist()}
                   for nombre, i in [('Caso 1 · acierto', 0), ('Caso 2 · error', 23)]]
+# 500 imágenes del conjunto de prueba (50 por prenda) para la muestra aleatoria y el selector de categoría
+rng = np.random.default_rng(42)
+idx = np.concatenate([rng.choice(np.where(ys == k)[0], 50, replace=False) for k in range(10)])
+datos['muestras'] = {'idx': idx.tolist(), 'clase': ys[idx].tolist(),
+                     'pix': base64.b64encode(xs[idx].astype('u1').tobytes()).decode()}
 json.dump(datos, open('visualizador/datos.json', 'w'))
 print('listo')

@@ -2,772 +2,571 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { construirModelo, adelante } from './cnn.js';
 import { b64ABytes, construirBosque, votar, camino } from './rf.js';
+import { T, CLASES, pc, num, miles, lim, duracion, progresos } from './comun.js';
+import { crearVistaCNN, PASOS_CNN, VISTA_CNN } from './vista_cnn.js';
+import { crearVistaRF, PASOS_RF, VISTA_RF } from './vista_rf.js';
 
 const DATOS = window.DATOS;
-const pc = (p, d = 1) => (p * 100).toFixed(d).replace('.', ',');
 const modelo = construirModelo(DATOS.pesos);
-const CLASES = ['Remera', 'Pantalón', 'Pullover', 'Vestido', 'Abrigo', 'Sandalia', 'Camisa', 'Zapatilla', 'Bolso', 'Bota'];
-
-// ---------- Descripción de las capas (las usa la escena y el panel lateral) ----------
-const CAPAS = [
-  { id: 'in', nombre: 'Entrada', forma: '28×28×1', x: 0, txt: 'La imagen en gris: 784 números entre 0 (negro) y 1 (blanco).' },
-  { id: 'c1', nombre: 'Convolución 1', forma: '28×28×32', x: 7, txt: '32 filtros de 3×3 recorren la imagen. Cada uno resalta un patrón distinto (bordes, contornos) y ReLU borra lo negativo.' },
-  { id: 'p1', nombre: 'Max pooling 1', forma: '14×14×32', x: 13, txt: 'Se queda con el valor más fuerte de cada zona de 2×2. La imagen se achica a la mitad.' },
-  { id: 'c2', nombre: 'Convolución 2', forma: '14×14×64', x: 18.5, txt: '64 filtros que combinan los patrones simples en formas más complejas (cuellos, suelas, mangas).' },
-  { id: 'p2', nombre: 'Max pooling 2', forma: '7×7×64', x: 24, txt: 'Otro achique: queda un resumen de 7×7 por filtro, 3.136 números en total.' },
-  { id: 'd1', nombre: 'Densa (128)', forma: '128', x: 29, txt: '128 neuronas combinan los 3.136 números. Cada una suma todo con pesos aprendidos.' },
-  { id: 'out', nombre: 'Salida (softmax)', forma: '10', x: 34, txt: '10 valores que softmax convierte en probabilidades: suman 100%.' },
-];
+const NA = DATOS.rf.arboles;
+const $ = (id) => document.getElementById(id);
+const reducido = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const SEQ = { cnn: PASOS_CNN, rf: PASOS_RF };
+const VISTAS = { cnn: VISTA_CNN, rf: VISTA_RF };
+const dos = (n) => String(n).padStart(2, '0');
 
 // ---------- Escena ----------
-const cont = document.getElementById('escena');
-const renderer = new THREE.WebGLRenderer({ antialias: true });
+const cont = $('escena');
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 cont.appendChild(renderer.domElement);
 const escena = new THREE.Scene();
-escena.background = new THREE.Color(0x05070d);
-escena.fog = new THREE.Fog(0x05070d, 45, 95);
-const cnnG = new THREE.Group(); escena.add(cnnG);   // todo lo de la CNN
-const rfG = new THREE.Group(); escena.add(rfG);     // todo lo del Random Forest
-const cam = new THREE.PerspectiveCamera(45, 1, 0.1, 300);
-const VISTA = { pos: [-13, 9, 27], mira: [19, -0.5, 0] };
-cam.position.set(...VISTA.pos);
-const orbit = new OrbitControls(cam, renderer.domElement);
-orbit.target.set(...VISTA.mira);
-orbit.enableDamping = true;
-orbit.autoRotateSpeed = 0.6;
+escena.background = new THREE.Color(T.fondo);
+escena.fog = new THREE.Fog(T.fondo, 45, 100);
+escena.add(new THREE.HemisphereLight('#DCECFF', T.fondo, 0.8));
+const sol = new THREE.DirectionalLight('#FFFFFF', 1.2);
+sol.position.set(-10, 16, 12);
+escena.add(sol);
+const piso = new THREE.GridHelper(110, 110, '#1E2A35', '#131B24');
+piso.position.set(16, -3.2, 0);
+escena.add(piso);
 
-function ajustar() {
-  const w = cont.clientWidth, h = cont.clientHeight;
-  renderer.setSize(w, h);
-  cam.aspect = w / h;
+// Una cámara por modelo: en Comparar se ven las dos, cada una en su mitad
+const camaras = {}, ctrls = {};
+for (const k of ['cnn', 'rf']) {
+  const cam = new THREE.PerspectiveCamera(38, 1, 0.1, 300);
+  const c = new OrbitControls(cam, renderer.domElement);
+  Object.assign(c, { enableDamping: true, dampingFactor: 0.08, minDistance: 5, maxDistance: 90, maxPolarAngle: Math.PI * 0.495, autoRotateSpeed: 0.5 });
+  camaras[k] = cam; ctrls[k] = c;
+}
+
+let modo = 'cnn';
+const activas = () => (modo === 'comp' ? ['cnn', 'rf'] : [modo]);
+// Los controles de abajo tapan parte del lienzo: esa franja (res) no cuenta para el encuadre.
+const reserva = () => document.querySelector('.controles').offsetHeight + 24;
+// Regiones en píxeles con origen arriba (top). En Comparar: CNN arriba y bosque abajo,
+// porque las dos arquitecturas son largas y aprovechan mejor el ancho.
+function regiones() {
+  const W = cont.clientWidth, H = cont.clientHeight, R = reserva();
+  if (modo !== 'comp') return [{ k: modo, top: 0, w: W, h: H, res: R }];
+  const arriba = Math.floor(Math.max(80, H - R) / 2);
+  return [{ k: 'cnn', top: 0, w: W, h: arriba, res: 0 }, { k: 'rf', top: arriba, w: W, h: H - arriba, res: R }];
+}
+function regionEn(cx, cy) {
+  const r = renderer.domElement.getBoundingClientRect();
+  const x = cx - r.left, y = cy - r.top;
+  const regs = regiones();
+  const reg = regs.find((g) => y >= g.top && y < g.top + g.h) || regs[0];
+  return { reg, ndc: new THREE.Vector2((x / reg.w) * 2 - 1, -((y - reg.top) / reg.h) * 2 + 1) };
+}
+// Los controles de órbita solo responden en la mitad donde empezó el gesto
+function elegirControl(e) { const { reg } = regionEn(e.clientX, e.clientY); for (const k in ctrls) ctrls[k].enabled = k === reg.k; }
+renderer.domElement.addEventListener('pointerdown', elegirControl, { capture: true });
+renderer.domElement.addEventListener('wheel', elegirControl, { capture: true, passive: true });
+
+// La proyección se corre hacia arriba para que la escena quede centrada en el área libre
+// (setViewOffset sobre un cuadro virtual más alto que la región).
+function proyeccion(cam, reg) {
+  cam.aspect = reg.w / reg.h;
+  if (reg.res > 0) cam.setViewOffset(reg.w, reg.h + reg.res, 0, reg.res, reg.w, reg.h);
+  else cam.clearViewOffset();
   cam.updateProjectionMatrix();
 }
-window.addEventListener('resize', ajustar);
-
-// Mapa de color: negro azulado -> turquesa -> blanco
-function color(v) {
-  v = Math.min(1, Math.max(0, v));
-  if (v < 0.6) { const t = v / 0.6; return [8 + 0 * t, 12 + 200 * t, 24 + 176 * t]; }
-  const t = (v - 0.6) / 0.4;
-  return [8 + 247 * t, 212 + 43 * t, 200 + 55 * t];
+// Encuadre: busca la distancia mínima a la que la caja de la arquitectura entra entera en el área libre
+const camPrueba = new THREE.PerspectiveCamera(38, 1, 0.1, 300);
+function encuadre(k) {
+  const reg = regiones().find((r) => r.k === k) || { w: cont.clientWidth, h: cont.clientHeight, res: 0 };
+  const v = VISTAS[k];
+  const caja = new THREE.Box3(new THREE.Vector3(...v.min), new THREE.Vector3(...v.max));
+  const mira = caja.getCenter(new THREE.Vector3());
+  const dir = new THREE.Vector3(...v.dir).normalize();
+  const esquinas = [0, 1, 2, 3, 4, 5, 6, 7].map((i) => new THREE.Vector3(i & 1 ? v.max[0] : v.min[0], i & 2 ? v.max[1] : v.min[1], i & 4 ? v.max[2] : v.min[2]));
+  proyeccion(camPrueba, reg);
+  const abajo = -1 + (2 * reg.res) / reg.h + 0.04;
+  const entra = (d) => {
+    camPrueba.position.copy(mira).addScaledVector(dir, d);
+    camPrueba.lookAt(mira);
+    camPrueba.updateMatrixWorld();
+    return esquinas.every((p) => { const q = p.clone().project(camPrueba); return Math.abs(q.x) < 0.95 && q.y < 0.93 && q.y > abajo && q.z < 1; });
+  };
+  let a = 4, b = 200;
+  for (let i = 0; i < 30; i++) { const m = (a + b) / 2; if (entra(m)) b = m; else a = m; }
+  return { mira, pos: mira.clone().addScaledVector(dir, b) };
 }
-
-const ESC = 0.04; // unidades por píxel
-const mapas = {};   // id -> [{mesh, tex, data}]
-const todosLosPlanos = [];
-
-function crearPlano(lado, px, nombre) {
-  const data = new Uint8Array(px * px * 4);
-  const tex = new THREE.DataTexture(data, px, px, THREE.RGBAFormat);
-  tex.magFilter = THREE.NearestFilter;
-  tex.minFilter = THREE.NearestFilter;
-  tex.flipY = false;
-  tex.needsUpdate = true;
-  const mat = new THREE.MeshBasicMaterial({ map: tex, side: THREE.DoubleSide });
-  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(lado, lado), mat);
-  mesh.rotation.y = Math.PI / 2; // el plano mira hacia -X / +X
-  mesh.userData.nombre = nombre;
-  todosLosPlanos.push(mesh);
-  return { mesh, tex, data, px };
+const transiciones = {};
+function irAVista(k, inmediato = false) {
+  const { pos, mira } = encuadre(k);
+  if (inmediato || reducido) { camaras[k].position.copy(pos); ctrls[k].target.copy(mira); delete transiciones[k]; return; }
+  transiciones[k] = { p0: camaras[k].position.clone(), m0: ctrls[k].target.clone(), p1: pos, m1: mira, t0: performance.now() };
 }
-
-function crearGrilla(id, cantidad, columnas, px, escala, nombre) {
-  const lado = px * escala;
-  const celda = lado * 1.12;
-  const filas = Math.ceil(cantidad / columnas);
-  const grupo = new THREE.Group();
-  const lista = [];
-  for (let i = 0; i < cantidad; i++) {
-    const p = crearPlano(lado, px, `${nombre} · filtro ${i + 1}`);
-    const c = i % columnas, f = Math.floor(i / columnas);
-    p.mesh.position.set(0, ((filas - 1) / 2 - f) * celda, (c - (columnas - 1) / 2) * celda);
-    grupo.add(p.mesh);
-    lista.push(p);
-  }
-  grupo.position.x = CAPAS.find((c) => c.id === id).x;
-  cnnG.add(grupo);
-  mapas[id] = lista;
-  return { grupo, alto: filas * celda, ancho: columnas * celda };
-}
-
-const gEntrada = crearGrilla('in', 1, 1, 28, 0.1, 'Entrada');
-const gC1 = crearGrilla('c1', 32, 8, 28, ESC, 'Convolución 1');
-const gP1 = crearGrilla('p1', 32, 8, 14, ESC, 'Pooling 1');
-const gC2 = crearGrilla('c2', 64, 8, 14, ESC, 'Convolución 2');
-const gP2 = crearGrilla('p2', 64, 8, 7, ESC, 'Pooling 2');
-
-// Neuronas de la capa densa: 128 cubitos
-const geoCubo = new THREE.BoxGeometry(0.22, 0.22, 0.22);
-const matCubo = new THREE.MeshBasicMaterial({ color: 0xffffff });
-const neuronas = new THREE.InstancedMesh(geoCubo, matCubo, 128);
-const posD1 = [];
-{
-  const m = new THREE.Matrix4();
-  for (let i = 0; i < 128; i++) {
-    const c = i % 16, f = Math.floor(i / 16);
-    const y = (3.5 - f) * 0.5, z = (c - 7.5) * 0.5;
-    posD1.push(new THREE.Vector3(CAPAS[5].x, y, z));
-    m.setPosition(CAPAS[5].x, y, z);
-    neuronas.setMatrixAt(i, m);
-    neuronas.setColorAt(i, new THREE.Color(0x0a1220));
-  }
-  cnnG.add(neuronas);
-}
-
-// Salida: 10 columnas cuya altura sigue a la probabilidad
-const salidas = [];
-const posOut = [];
-function etiqueta(texto, tam = 64, col = '#cfe8ff') {
-  const cv = document.createElement('canvas');
-  cv.width = 512; cv.height = 128;
-  const g = cv.getContext('2d');
-  g.font = `bold ${tam}px ui-monospace, Consolas, monospace`;
-  g.fillStyle = col; g.textAlign = 'center'; g.textBaseline = 'middle';
-  g.fillText(texto, 256, 64);
-  const t = new THREE.CanvasTexture(cv);
-  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: t, transparent: true, depthTest: false }));
-  s.scale.set(4, 1, 1);
-  return s;
-}
-for (let k = 0; k < 10; k++) {
-  const z = (k - 4.5) * 0.95;
-  const geo = new THREE.BoxGeometry(0.5, 1, 0.5);
-  geo.translate(0, 0.5, 0);
-  const mat = new THREE.MeshBasicMaterial({ color: 0x1a2438 });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(CAPAS[6].x, -2.2, z);
-  mesh.scale.y = 0.05;
-  cnnG.add(mesh);
-  const et = etiqueta(CLASES[k], 56);
-  et.scale.set(2.2, 0.55, 1);
-  et.position.set(CAPAS[6].x, -2.75, z);
-  cnnG.add(et);
-  const pct = etiqueta('0%', 56, '#ffffff');
-  pct.scale.set(1.4, 0.35, 1);
-  cnnG.add(pct);
-  salidas.push({ mesh, mat, pct, cv: pct.material.map.image });
-  posOut.push(new THREE.Vector3(CAPAS[6].x, -2.2, z));
-}
-
-// Rótulos de cada capa
-const altoCartel = 4.6;
-CAPAS.forEach((c) => {
-  const s = etiqueta(c.nombre, 54, '#9fd8ff');
-  s.scale.set(4.2, 1.05, 1);
-  s.position.set(c.x, altoCartel, 0);
-  cnnG.add(s);
-  const s2 = etiqueta(c.forma, 48, '#5b6b86');
-  s2.scale.set(3.4, 0.85, 1);
-  s2.position.set(c.x, altoCartel - 0.65, 0);
-  cnnG.add(s2);
-});
-
-// ---------- Conexiones (muestra de líneas entre capas) ----------
-function centros(id) {
-  if (id === 'd1') return posD1;
-  if (id === 'out') return posOut;
-  return mapas[id].map((p) => p.mesh.getWorldPosition(new THREE.Vector3()));
-}
-// Hace falta que las matrices del mundo estén actualizadas antes de pedir posiciones
-escena.updateMatrixWorld(true);
-
-const conexiones = []; // {lineas, origen, destino, pares, idCapaDestino}
-function conectar(idA, idB, tipo, cantidad, capaDestinoIdx) {
-  const A = centros(idA), B = centros(idB);
-  const pares = [];
-  if (tipo === 'uno') {
-    for (let i = 0; i < A.length; i++) pares.push([i, i]);
-  } else if (tipo === 'todos') {
-    for (let i = 0; i < A.length; i++) for (let j = 0; j < B.length; j++) pares.push([i, j]);
-  } else {
-    for (let n = 0; n < cantidad; n++) pares.push([Math.floor(Math.random() * A.length), Math.floor(Math.random() * B.length)]);
-  }
-  const pos = new Float32Array(pares.length * 6);
-  pares.forEach(([i, j], n) => {
-    pos.set([A[i].x + 0.02, A[i].y, A[i].z, B[j].x - 0.02, B[j].y, B[j].z], n * 6);
-  });
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  const col = new Float32Array(pares.length * 6);
-  const attr = new THREE.BufferAttribute(col, 3);
-  geo.setAttribute('color', attr);
-  const mat = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.0, blending: THREE.AdditiveBlending, depthWrite: false });
-  const lineas = new THREE.LineSegments(geo, mat);
-  cnnG.add(lineas);
-  conexiones.push({ lineas, mat, attr, pares, idA, idB, capaDestinoIdx });
-}
-conectar('in', 'c1', 'todos', 0, 1);
-conectar('c1', 'p1', 'uno', 0, 2);
-conectar('p1', 'c2', 'muestra', 450, 3);
-conectar('c2', 'p2', 'uno', 0, 4);
-conectar('p2', 'd1', 'muestra', 700, 5);
-conectar('d1', 'out', 'todos', 0, 6);
-
-// ---------- Actualización con una nueva imagen ----------
-let ultimo = null;           // resultado del forward
-let revelado = [1, 1, 1, 1, 1, 1, 1]; // 0..1 por capa (para la animación de "recorrido")
-
-function pintarMapas(id, datos, px, canales, tope) {
-  const lista = mapas[id];
-  for (let c = 0; c < canales; c++) {
-    const { data, tex } = lista[c];
-    for (let i = 0; i < px * px; i++) {
-      const v = Math.pow(Math.min(1, datos[i * canales + c] / tope), 0.7);
-      const [r, g, b] = color(v);
-      data[i * 4] = r; data[i * 4 + 1] = g; data[i * 4 + 2] = b; data[i * 4 + 3] = 255;
-    }
-    tex.needsUpdate = true;
+function moverCamaras(ahora) {
+  for (const [k, tr] of Object.entries(transiciones)) {
+    const s = lim((ahora - tr.t0) / 900), e = 1 - Math.pow(1 - s, 3);
+    camaras[k].position.lerpVectors(tr.p0, tr.p1, e);
+    ctrls[k].target.lerpVectors(tr.m0, tr.m1, e);
+    if (s >= 1) delete transiciones[k];
   }
 }
-const maximo = (arr) => { let m = 1e-6; for (const v of arr) if (v > m) m = v; return m; };
+// Al cambiar el tamaño (ventana, paneles plegados) se reencuadra, salvo que el usuario haya movido la cámara
+let movida = false;
+// En Comparar: rótulo de cada franja y la línea que las separa
+function ubicarRotulos() {
+  const rb = regiones()[1];
+  if (!rb) return;
+  $('rot-b').style.top = `${rb.top + 14}px`;
+  $('divisor').style.top = `${rb.top}px`;
+}
+function ajustar() {
+  renderer.setSize(cont.clientWidth, cont.clientHeight);
+  ubicarRotulos();
+  if (!movida && camaras.cnn.position.lengthSq() > 0) for (const k of activas()) irAVista(k, true);
+}
+new ResizeObserver(ajustar).observe(cont);
+renderer.domElement.addEventListener('pointerdown', () => { movida = true; });
+renderer.domElement.addEventListener('wheel', () => { movida = true; }, { passive: true });
 
-// Intensidad de cada "unidad" (un mapa o una neurona) usada para iluminar las líneas
-function intensidades(id, r) {
-  const norm = (a) => { const m = maximo(a); return Array.from(a, (v) => v / m); };
-  if (id === 'in') return [1];
-  if (id === 'd1') return norm(r.d1);
-  if (id === 'out') return r.probs;
-  const [datos, px, ch] = { c1: [r.a1, 28, 32], p1: [r.p1, 14, 32], c2: [r.a2, 14, 64], p2: [r.p2, 7, 64] }[id];
-  const medias = new Array(ch).fill(0);
-  for (let i = 0; i < px * px; i++) for (let c = 0; c < ch; c++) medias[c] += datos[i * ch + c];
-  return norm(medias);
+// ---------- Reloj de la secuencia: todo se dibuja a partir de t ----------
+const reloj = { t: 0, play: false, vel: 1 };
+const tFinal = () => Math.max(...activas().map((k) => duracion(SEQ[k])));
+function bordes() {
+  const s = new Set();
+  for (const k of activas()) { let a = 0; for (const p of SEQ[k]) { a += p.dur; s.add(a); } }
+  return [...s].sort((a, b) => a - b);
+}
+const ICONO_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5v11l9-5.5z"/></svg>';
+const ICONO_PAUSA = '<svg viewBox="0 0 16 16" fill="currentColor"><path d="M4 2.5h3v11H4zM9 2.5h3v11H9z"/></svg>';
+function botonPlay() {
+  const b = $('play');
+  b.innerHTML = reloj.play ? `${ICONO_PAUSA}Pausa` : `${ICONO_PLAY}Reproducir`;
+  b.setAttribute('aria-label', reloj.play ? 'Pausar' : 'Reproducir');
+}
+function reproducir(desdeCero = false) {
+  if (desdeCero || reloj.t >= tFinal()) reloj.t = 0;
+  reloj.play = true; botonPlay();
+}
+function pausar() { reloj.play = false; botonPlay(); }
+function paso() { const b = bordes().find((x) => x > reloj.t + 1); reloj.t = b ?? tFinal(); pausar(); }
+function alFinal() { reloj.t = tFinal(); pausar(); }
+
+// ---------- Estado de la inferencia ----------
+let vCNN = null, vRF = null, bosque = null;
+let imgActual = new Float32Array(784), resCNN = null, resRF = null, pixRF = null, claseReal = null;
+let tCNN = 0, tRF = 0;
+
+function inferir(img, animar) {
+  imgActual = img;
+  const t0 = performance.now();
+  resCNN = adelante(modelo, img);
+  tCNN = performance.now() - t0;
+  vCNN.actualizar(resCNN, img);
+  inferirRF();
+  paneles();
+  if (animar && !reducido) reproducir(true); else alFinal();
+}
+function inferirRF() {
+  if (!bosque) return;
+  pixRF = Uint8Array.from(imgActual, (v) => Math.round(v * 255));
+  const t0 = performance.now();
+  resRF = votar(bosque, pixRF);
+  tRF = performance.now() - t0;
+  vRF.actualizar(resRF, pixRF, (t) => camino(bosque, t, pixRF));
 }
 
-function actualizar(img) {
-  const r = adelante(modelo, img);
-  ultimo = r;
-  // Entrada
-  const e = mapas.in[0];
-  for (let i = 0; i < 784; i++) {
-    const [rr, gg, bb] = color(Math.pow(img[i], 0.8));
-    e.data[i * 4] = rr; e.data[i * 4 + 1] = gg; e.data[i * 4 + 2] = bb; e.data[i * 4 + 3] = 255;
-  }
-  e.tex.needsUpdate = true;
-  pintarMapas('c1', r.a1, 28, 32, maximo(r.a1));
-  pintarMapas('p1', r.p1, 14, 32, maximo(r.p1));
-  pintarMapas('c2', r.a2, 14, 64, maximo(r.a2));
-  pintarMapas('p2', r.p2, 7, 64, maximo(r.p2));
-
-  // Neuronas
-  const mx = maximo(r.d1);
-  const c = new THREE.Color();
-  for (let i = 0; i < 128; i++) {
-    const [rr, gg, bb] = color(Math.pow(r.d1[i] / mx, 0.7));
-    c.setRGB(rr / 255, gg / 255, bb / 255);
-    neuronas.setColorAt(i, c);
-  }
-  neuronas.instanceColor.needsUpdate = true;
-
-  // Salidas
-  const top = r.probs.indexOf(Math.max(...r.probs));
-  salidas.forEach((s, k) => {
-    const p = r.probs[k];
-    s.mesh.scale.y = Math.max(0.05, p * 5);
-    s.mat.color.set(k === top ? 0xe4572e : 0x2a9d8f).multiplyScalar(0.25 + 0.75 * Math.min(1, p * 2 + (k === top ? 0.5 : 0)));
-    s.pct.position.set(CAPAS[6].x, -2.2 + Math.max(0.05, p * 5) + 0.35, posOut[k].z);
-    const gx = s.cv.getContext('2d');
-    gx.clearRect(0, 0, 512, 128);
-    gx.font = 'bold 56px ui-monospace, Consolas, monospace';
-    gx.fillStyle = k === top ? '#ffb199' : '#8aa0bd';
-    gx.textAlign = 'center'; gx.textBaseline = 'middle';
-    gx.fillText(`${(p * 100).toFixed(p > 0.1 ? 0 : 1)}%`, 256, 64);
-    s.pct.material.map.needsUpdate = true;
-  });
-
-  // Líneas
-  conexiones.forEach((cn) => {
-    const ia = intensidades(cn.idA, r), ib = intensidades(cn.idB, r);
-    const col = cn.attr.array;
-    cn.pares.forEach(([i, j], n) => {
-      const k = Math.pow(ia[i] * ib[j], 0.5);
-      const v = 0.05 + 0.95 * k;
-      const o = n * 6;
-      col[o] = 0.0 + 0.25 * v; col[o + 1] = 0.55 * v; col[o + 2] = 0.75 * v;
-      col[o + 3] = 0.1 * v + 0.0; col[o + 4] = 0.6 * v; col[o + 5] = 0.85 * v;
-    });
-    cn.attr.needsUpdate = true;
-  });
-
-  panel(r, top);
-  return r;
-}
-
-// ---------- Animación de "recorrido" por las capas ----------
-let animInicio = null;
-function reproducir() {
-  animInicio = performance.now();
-  if (rfRes) { rfInicio = animInicio; brilloRF(0, 0); aplicarRF(0); }
-  revelado = [0, 0, 0, 0, 0, 0, 0];
-}
-const PASO = 450; // ms entre capas
-function avanzarAnimacion(ahora) {
-  if (animInicio !== null) {
-    let todas = true;
-    for (let k = 0; k < 7; k++) {
-      const t = (ahora - animInicio - k * PASO) / 500;
-      revelado[k] = Math.min(1, Math.max(0, t));
-      if (revelado[k] < 1) todas = false;
-    }
-    if (todas) animInicio = null;
-    const activa = revelado.findIndex((v) => v < 1);
-    marcarCapa(animInicio === null ? -1 : activa);
-  }
-  const ids = ['in', 'c1', 'p1', 'c2', 'p2', 'd1', 'out'];
-  ids.forEach((id, k) => {
-    const f = 0.08 + 0.92 * revelado[k];
-    if (mapas[id]) mapas[id].forEach((p) => p.mesh.material.color.setScalar(f));
-  });
-  neuronas.material.color.setScalar(0.08 + 0.92 * revelado[5]);
-  salidas.forEach((s) => { s.mesh.visible = revelado[6] > 0.02; s.pct.visible = revelado[6] > 0.5; });
-  conexiones.forEach((cn) => { cn.mat.opacity = 0.55 * revelado[cn.capaDestinoIdx]; });
-}
-
-// ---------- Panel lateral ----------
-const elFlujo = document.getElementById('flujo');
-const elBarras = document.getElementById('barras');
-const elMate = document.getElementById('mate');
-const elRes = document.getElementById('resultado');
-CAPAS.forEach((c, k) => {
-  const d = document.createElement('div');
-  d.className = 'capa'; d.id = 'capa-' + k;
-  d.innerHTML = `<b>${c.nombre}</b><span>${c.forma}</span><p>${c.txt}</p>`;
-  elFlujo.appendChild(d);
-});
-function marcarCapa(k) {
-  CAPAS.forEach((_, i) => document.getElementById('capa-' + i).classList.toggle('activa', i === k));
-}
-CLASES.forEach((n, k) => {
-  const f = document.createElement('div');
-  f.className = 'barra'; f.id = 'barra-' + k;
-  f.innerHTML = `<span>${n}</span><div class="pistas"><i class="bc"><u></u></i><i class="br"><u></u></i></div><em><b class="c">0%</b><b class="r">0%</b></em>`;
-  elBarras.appendChild(f);
-});
-
-function panel(r, top) {
-  r.probs.forEach((p, k) => {
-    const f = document.getElementById('barra-' + k);
-    f.querySelector('.bc u').style.width = (p * 100).toFixed(1) + '%';
-    f.querySelector('em .c').textContent = pc(p) + '%';
-    f.classList.toggle('tc', k === top);
-  });
-  const mx = Math.max(...r.z);
-  const sumaE = r.z.reduce((s, v) => s + Math.exp(v - mx), 0);
-  const orden = r.probs.map((p, k) => [p, k]).sort((a, b) => b[0] - a[0]).slice(0, 3);
-  elMate.innerHTML =
-    `<div>softmax(z<sub>k</sub>) = e<sup>z<sub>k</sub></sup> / Σ e<sup>z<sub>j</sub></sup></div>` +
-    orden.map(([p, k]) => `<div>${CLASES[k]}: z = ${r.z[k].toFixed(2)} → e<sup>z</sup>/Σ = ${(Math.exp(r.z[k] - mx)).toFixed(2)}/${sumaE.toFixed(2)} = <b>${pc(p)}%</b></div>`).join('');
-  elRes.innerHTML = `<b class="et">CNN</b> ${CLASES[top]} con ${pc(r.probs[top])}% de seguridad`;
-}
-
-// ---------- Lienzo para dibujar ----------
-const lienzo = document.getElementById('lienzo');
+// ---------- Panel de entrada ----------
+const lienzo = $('lienzo');
 const g = lienzo.getContext('2d', { willReadFrequently: true });
 const chico = document.createElement('canvas');
 chico.width = chico.height = 28;
 const gc = chico.getContext('2d', { willReadFrequently: true });
 function limpiarLienzo() { g.fillStyle = '#000'; g.fillRect(0, 0, 224, 224); }
-limpiarLienzo();
-
+function dibujarEnLienzo(img) {
+  const d = new ImageData(28, 28);
+  for (let i = 0; i < 784; i++) { const v = Math.round(img[i] * 255); d.data.set([v, v, v, 255], i * 4); }
+  gc.putImageData(d, 0, 0);
+  g.imageSmoothingEnabled = false;
+  g.drawImage(chico, 0, 0, 224, 224);
+  g.imageSmoothingEnabled = true;
+}
 function desdeLienzo() {
   gc.imageSmoothingEnabled = true; gc.imageSmoothingQuality = 'high';
   gc.drawImage(lienzo, 0, 0, 28, 28);
   const d = gc.getImageData(0, 0, 28, 28).data;
-  const img = new Float32Array(784);
-  for (let i = 0; i < 784; i++) img[i] = d[i * 4] / 255;
-  return img;
+  return Float32Array.from({ length: 784 }, (_, i) => d[i * 4] / 255);
+}
+function origen(texto, clase) {
+  claseReal = clase ?? null;
+  $('origen').textContent = texto;
+  $('real').textContent = claseReal === null ? '—' : CLASES[claseReal];
+}
+function cargarPix(pix, texto, clase) {
+  const img = Float32Array.from(pix, (v) => v / 255);
+  dibujarEnLienzo(img);
+  origen(texto, clase);
+  inferir(img, true);
 }
 
 let dibujando = false, previo = null, pendiente = false;
-function posicion(e) {
-  const r = lienzo.getBoundingClientRect();
-  return [(e.clientX - r.left) * 224 / r.width, (e.clientY - r.top) * 224 / r.height];
-}
+function posicion(e) { const r = lienzo.getBoundingClientRect(); return [((e.clientX - r.left) * 224) / r.width, ((e.clientY - r.top) * 224) / r.height]; }
 function trazo(e) {
   const p = posicion(e);
   g.strokeStyle = '#fff'; g.lineWidth = 17; g.lineCap = 'round'; g.lineJoin = 'round';
   g.beginPath(); g.moveTo(...(previo || p)); g.lineTo(...p); g.stroke();
   previo = p;
-  if (!pendiente) {
-    pendiente = true;
-    requestAnimationFrame(() => { pendiente = false; todo(desdeLienzo()); });
-  }
+  if (!pendiente) { pendiente = true; requestAnimationFrame(() => { pendiente = false; inferir(desdeLienzo(), false); }); }
 }
-lienzo.addEventListener('pointerdown', (e) => {
-  dibujando = true; previo = null; lienzo.setPointerCapture(e.pointerId);
-  if (animInicio === null && revelado.some((v) => v < 1)) revelado = [1, 1, 1, 1, 1, 1, 1];
-  cortarAnimRF();
-  claseReal = null;
-  trazo(e);
-});
+lienzo.addEventListener('pointerdown', (e) => { dibujando = true; previo = null; lienzo.setPointerCapture(e.pointerId); origen('dibujo a mano', null); trazo(e); });
 lienzo.addEventListener('pointermove', (e) => { if (dibujando) trazo(e); });
 lienzo.addEventListener('pointerup', () => { dibujando = false; previo = null; });
-document.getElementById('limpiar').onclick = () => { limpiarLienzo(); claseReal = null; todo(new Float32Array(784)); };
+$('limpiar').onclick = () => { limpiarLienzo(); origen('dibujo a mano', null); inferir(new Float32Array(784), false); };
 
-// ---------- Ejemplos reales del conjunto de prueba ----------
-let claseReal = null; // la prenda verdadera, solo si la imagen viene del dataset
-function cargarEjemplo(ej) {
-  claseReal = ej.clase;
-  const img = new Float32Array(784);
-  const tmp = new ImageData(28, 28);
-  for (let i = 0; i < 784; i++) {
-    img[i] = ej.pix[i] / 255;
-    tmp.data[i * 4] = tmp.data[i * 4 + 1] = tmp.data[i * 4 + 2] = ej.pix[i];
-    tmp.data[i * 4 + 3] = 255;
-  }
-  gc.putImageData(tmp, 0, 0);
-  limpiarLienzo();
-  g.imageSmoothingEnabled = false;
-  g.drawImage(chico, 0, 0, 224, 224);
-  g.imageSmoothingEnabled = true;
-  todo(img);
-  reproducir();
-}
-const elEj = document.getElementById('ejemplos');
-const rotacion = new Array(10).fill(0);
+// 500 imágenes reales del conjunto de prueba (50 por prenda)
+const MU = b64ABytes(DATOS.muestras.pix);
+const muestra = (i) => MU.subarray(i * 784, (i + 1) * 784);
+const porClase = CLASES.map((_, k) => DATOS.muestras.clase.map((c, i) => (c === k ? i : -1)).filter((i) => i >= 0));
+const giro = new Array(10).fill(0);
+function cargarMuestra(i) { cargarPix(muestra(i), `prueba n.º ${DATOS.muestras.idx[i]}`, DATOS.muestras.clase[i]); }
 CLASES.forEach((n, k) => {
   const b = document.createElement('button');
   b.textContent = n;
-  b.onclick = () => {
-    const lista = DATOS.ejemplos.filter((e) => e.clase === k);
-    cargarEjemplo(lista[rotacion[k]++ % lista.length]);
-  };
-  elEj.appendChild(b);
+  b.title = `Una imagen de ${n.toLowerCase()} del conjunto de prueba`;
+  b.onclick = () => { const l = porClase[k]; cargarMuestra(l[giro[k]++ % l.length]); };
+  $('categorias').appendChild(b);
 });
-(DATOS.casos || []).forEach((c) => {
+$('aleatoria').onclick = () => cargarMuestra(Math.floor(Math.random() * DATOS.muestras.idx.length));
+DATOS.casos.forEach((c) => {
   const b = document.createElement('button');
-  b.textContent = c.nombre;
-  b.title = `Imagen ${c.idx} del conjunto de prueba (real: ${CLASES[c.clase]})`;
-  b.onclick = () => cargarEjemplo(c);
-  document.getElementById('casos').appendChild(b);
-});
-document.getElementById('replay').onclick = reproducir;
-const bRot = document.getElementById('rotar');
-bRot.onclick = () => { orbit.autoRotate = !orbit.autoRotate; bRot.classList.toggle('on', orbit.autoRotate); };
-document.getElementById('vista').onclick = () => irAVista();
-
-// ---------- Etiqueta al pasar el mouse por un mapa ----------
-const ray = new THREE.Raycaster();
-const mouse = new THREE.Vector2();
-const tip = document.getElementById('tip');
-renderer.domElement.addEventListener('pointermove', (e) => {
-  const r = renderer.domElement.getBoundingClientRect();
-  mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-  ray.setFromCamera(mouse, cam);
-  const hit = ray.intersectObjects(todosLosPlanos, false).find((h) => visibleDeVerdad(h.object));
-  const hitA = rfG.visible && bosque ? ray.intersectObject(arboles, false)[0] : null;
-  if (hitA && (!hit || hitA.distance < hit.distance)) {
-    tip.style.display = 'block'; tip.style.left = e.clientX + 14 + 'px'; tip.style.top = e.clientY + 14 + 'px';
-    tip.textContent = `Árbol ${hitA.instanceId + 1} · vota ${CLASES[rfRes.porArbol[hitA.instanceId]]} (clic para ver sus preguntas)`;
-  } else if (hit) { tip.style.display = 'block'; tip.style.left = e.clientX + 14 + 'px'; tip.style.top = e.clientY + 14 + 'px'; tip.textContent = hit.object.userData.nombre; }
-  else tip.style.display = 'none';
+  b.textContent = c.nombre.replace(' · ', ': ');
+  b.title = `Imagen ${c.idx} del conjunto de prueba (real: ${CLASES[c.clase]}). Es la de la slide 17.`;
+  b.onclick = () => cargarPix(c.pix, `prueba n.º ${c.idx}`, c.clase);
+  $('casos').appendChild(b);
 });
 
-// =====================================================================================
-// ---------- Random Forest: 200 árboles que votan ----------
-// =====================================================================================
-const COL_CLASE = CLASES.map((_, k) => new THREE.Color().setHSL(k / 10, 0.72, 0.58));
-const hexClase = (k) => '#' + COL_CLASE[k].getHexString();
-const OSCURO = new THREE.Color(0x0a1220);
-const NA = DATOS.rf.arboles;
-const RX = { in: 0, imp: 7.5, arb: 18.5, out: 31 }; // posición x de cada etapa
-const ETAPAS_RF = [
-  { nombre: 'Entrada', forma: '784 píxeles', x: RX.in, txt: 'La imagen aplanada: el bosque recibe 784 números sueltos y no sabe qué píxel está al lado de cuál.' },
-  { nombre: 'Importancia', forma: '28×28', x: RX.imp, txt: 'Qué píxeles le sirvieron más al bosque al entrenar (más claro = más importante). Es fijo: no depende de la imagen.' },
-  { nombre: `${NA} árboles`, forma: '1,8 M nodos', x: RX.arb, txt: 'Cada cubo es un árbol. Hace preguntas sí/no sobre píxeles sueltos hasta una hoja y vota una prenda (el color). Clic en un cubo para ver sus preguntas.' },
-  { nombre: 'Votación', forma: '10', x: RX.out, txt: 'Gana la prenda más votada. La proporción de votos es la probabilidad: no hay softmax.' },
-];
-
-const rfIn = crearPlano(2.8, 28, 'Entrada (en naranja: los píxeles que pregunta el árbol elegido)');
-rfIn.mesh.position.x = RX.in; rfG.add(rfIn.mesh);
-const rfImp = crearPlano(3.4, 28, 'Importancia de cada píxel (feature_importances_)');
-rfImp.mesh.position.x = RX.imp; rfG.add(rfImp.mesh);
-{
-  const imp = b64ABytes(DATOS.rf.importancia);
-  for (let i = 0; i < 784; i++) {
-    const [r, g2, b] = color(Math.pow(imp[i] / 255, 0.6));
-    rfImp.data.set([r, g2, b, 255], i * 4);
+// Una foto cualquiera: se encuadra en 24 px, se pasa a gris y se invierte si el fondo es claro (FashionMNIST tiene fondo negro)
+$('archivo').addEventListener('change', async (e) => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  const url = URL.createObjectURL(f);
+  try {
+    const im = new Image(); im.src = url; await im.decode();
+    const lum = (d, i) => (0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2]) / 255;
+    const m = document.createElement('canvas'); m.width = m.height = 64;
+    const gm = m.getContext('2d', { willReadFrequently: true });
+    gm.drawImage(im, 0, 0, 64, 64);
+    const dm = gm.getImageData(0, 0, 64, 64).data;
+    let borde = 0, nb = 0;
+    for (let i = 0; i < 64; i++) for (const [x, y] of [[i, 0], [i, 63], [0, i], [63, i]]) { borde += lum(dm, (y * 64 + x) * 4); nb++; }
+    borde /= nb;
+    const c = document.createElement('canvas'); c.width = c.height = 28;
+    const gg = c.getContext('2d', { willReadFrequently: true });
+    const v = Math.round(borde * 255);
+    gg.fillStyle = `rgb(${v},${v},${v})`; gg.fillRect(0, 0, 28, 28);
+    const s = 24 / Math.max(im.width, im.height), w = im.width * s, h = im.height * s;
+    gg.imageSmoothingQuality = 'high';
+    gg.drawImage(im, (28 - w) / 2, (28 - h) / 2, w, h);
+    const d = gg.getImageData(0, 0, 28, 28).data;
+    let img = Float32Array.from({ length: 784 }, (_, i) => lum(d, i * 4));
+    if (borde > 0.5) img = img.map((x) => 1 - x);
+    let mn = 1, mx = 0;
+    for (const x of img) { mn = Math.min(mn, x); mx = Math.max(mx, x); }
+    if (mx - mn > 0.05) img = img.map((x) => (x - mn) / (mx - mn));
+    dibujarEnLienzo(img);
+    origen(`archivo ${f.name.length > 18 ? f.name.slice(0, 16) + '…' : f.name}`, null);
+    inferir(img, true);
+  } catch {
+    $('origen').textContent = 'no se pudo leer la imagen';
+  } finally {
+    URL.revokeObjectURL(url);
   }
-  rfImp.tex.needsUpdate = true;
-}
-
-// Los árboles: una grilla de cubos
-const COLS_A = 20, SEP_A = 0.6;
-const arboles = new THREE.InstancedMesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), new THREE.MeshBasicMaterial({ color: 0xffffff }), NA);
-const posArbol = [];
-{
-  const m = new THREE.Matrix4();
-  const filas = Math.ceil(NA / COLS_A);
-  for (let i = 0; i < NA; i++) {
-    const c = i % COLS_A, f = Math.floor(i / COLS_A);
-    const p = new THREE.Vector3(RX.arb, ((filas - 1) / 2 - f) * SEP_A, (c - (COLS_A - 1) / 2) * SEP_A);
-    posArbol.push(p);
-    m.setPosition(p);
-    arboles.setMatrixAt(i, m);
-    arboles.setColorAt(i, OSCURO);
-  }
-  rfG.add(arboles);
-}
-const marcador = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(0.62, 0.62, 0.62)), new THREE.LineBasicMaterial({ color: 0xffffff }));
-rfG.add(marcador);
-
-// Columnas de votos
-const salidasRF = [];
-const zOut = (k) => (k - 4.5) * 0.95;
-for (let k = 0; k < 10; k++) {
-  const geo = new THREE.BoxGeometry(0.5, 1, 0.5);
-  geo.translate(0, 0.5, 0);
-  const mat = new THREE.MeshBasicMaterial({ color: COL_CLASE[k].clone() });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.position.set(RX.out, -2.2, zOut(k));
-  mesh.scale.y = 0.05;
-  rfG.add(mesh);
-  const et = etiqueta(CLASES[k], 56, hexClase(k));
-  et.scale.set(2.2, 0.55, 1);
-  et.position.set(RX.out, -2.75, zOut(k));
-  rfG.add(et);
-  const pct = etiqueta('0%', 56, '#ffffff');
-  pct.scale.set(1.4, 0.35, 1);
-  rfG.add(pct);
-  salidasRF.push({ mesh, mat, pct, cv: pct.material.map.image });
-}
-ETAPAS_RF.forEach((c) => {
-  const s = etiqueta(c.nombre, 54, '#ffcf99');
-  s.scale.set(4.2, 1.05, 1); s.position.set(c.x, altoCartel, 0); rfG.add(s);
-  const s2 = etiqueta(c.forma, 48, '#5b6b86');
-  s2.scale.set(3.4, 0.85, 1); s2.position.set(c.x, altoCartel - 0.65, 0); rfG.add(s2);
 });
 
-// Una línea de cada árbol a la prenda que votó
-const lPos = new Float32Array(NA * 6), lCol = new Float32Array(NA * 6);
-const geoVotos = new THREE.BufferGeometry();
-geoVotos.setAttribute('position', new THREE.BufferAttribute(lPos, 3));
-geoVotos.setAttribute('color', new THREE.BufferAttribute(lCol, 3));
-const lineasVotos = new THREE.LineSegments(geoVotos, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.45, blending: THREE.AdditiveBlending, depthWrite: false }));
-rfG.add(lineasVotos);
-// Líneas de la entrada a algunos árboles (decorativas: todos los árboles miran la misma imagen)
-{
-  const n = 60, pos = new Float32Array(n * 6);
-  for (let i = 0; i < n; i++) {
-    const a = posArbol[Math.floor((i * NA) / n)];
-    pos.set([RX.in + 0.02, (Math.random() - 0.5) * 2.4, (Math.random() - 0.5) * 2.4, a.x - 0.2, a.y, a.z], i * 6);
-  }
-  const geo = new THREE.BufferGeometry();
-  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  rfG.add(new THREE.LineSegments(geo, new THREE.LineBasicMaterial({ color: 0x1d4a5a, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })));
-}
+// Barras de clasificación (CNN arriba, bosque abajo)
+CLASES.forEach((n, k) => {
+  const f = document.createElement('div');
+  f.className = 'barra'; f.id = 'barra-' + k;
+  f.innerHTML = `<span class="nombre">${n}</span><span class="pistas"><i class="p-cnn"><u></u></i><i class="p-rf"><u></u></i></span><span class="vals"><b class="v-cnn c-cnn">–</b><b class="v-rf c-rf">–</b></span>`;
+  $('barras').appendChild(f);
+});
 
-// ---------- Estado y actualización del bosque ----------
-let bosque = null;        // se arma cuando termina de descomprimirse
-let rfRes = null, rfPix = null, rfCam = null, arbolSel = 0, rfN = NA, rfInicio = null;
+// ---------- Panel de análisis ----------
+const top = (a) => a.indexOf(Math.max(...a));
+const nParam = ['conv1', 'conv2', 'dense1', 'dense2'].reduce((s, k) => s + DATOS.pesos[k].w_shape.reduce((a, b) => a * b, 1) + DATOS.pesos[k].w_shape.at(-1), 0);
+$('ex-cnn').textContent = `${pc(DATOS.exactitud, 2)} %`;
+$('ex-rf').textContent = `${pc(DATOS.rf.exactitud, 2)} %`;
+$('m-ex-cnn').textContent = `${pc(DATOS.exactitud, 2)} %`;
+$('m-ex-rf').textContent = `${pc(DATOS.rf.exactitud, 2)} %`;
+$('m-par').textContent = miles(nParam);
+$('m-arb').textContent = miles(NA);
+$('m-nod').textContent = miles(DATOS.rf.nodos);
+$('formula-rf').innerHTML = `P̂(k) = votos<sub>k</sub> / ${NA}`;
 
-function pintarEntradaRF() {
-  for (let i = 0; i < 784; i++) {
-    const [r, g2, b] = color(Math.pow(rfPix[i] / 255, 0.8));
-    rfIn.data.set([r, g2, b, 255], i * 4);
-  }
-  if (rfCam) for (const p of rfCam.pasos) rfIn.data.set([255, 140, 40, 255], p.pixel * 4);
-  rfIn.tex.needsUpdate = true;
-}
-
-// Muestra los votos de los primeros n árboles (n < NA durante la animación)
-function aplicarRF(n) {
-  rfN = n;
-  const por = rfRes.porArbol;
-  const cnt = new Array(10).fill(0);
-  for (let i = 0; i < NA; i++) {
-    const ya = i < n;
-    if (ya) cnt[por[i]]++;
-    const c = ya ? COL_CLASE[por[i]] : OSCURO;
-    arboles.setColorAt(i, c);
-    const v = ya ? 0.8 : 0;
-    lCol.set([c.r * v, c.g * v, c.b * v, c.r * v, c.g * v, c.b * v], i * 6);
-  }
-  arboles.instanceColor.needsUpdate = true;
-  geoVotos.attributes.color.needsUpdate = true;
-  const lider = cnt.indexOf(Math.max(...cnt));
-  salidasRF.forEach((s, k) => {
-    const p = cnt[k] / NA;
-    const alto = Math.max(0.05, p * 5);
-    s.mesh.scale.y = alto;
-    s.mat.color.copy(COL_CLASE[k]).multiplyScalar(k === lider && n > 0 ? 1 : 0.45);
-    s.pct.position.set(RX.out, -2.2 + alto + 0.35, zOut(k));
-    s.pct.visible = n > 0;
-    const gx = s.cv.getContext('2d');
-    gx.clearRect(0, 0, 512, 128);
-    gx.font = 'bold 56px ui-monospace, Consolas, monospace';
-    gx.fillStyle = k === lider ? '#ffffff' : '#8aa0bd';
-    gx.textAlign = 'center'; gx.textBaseline = 'middle';
-    gx.fillText(`${pc(p, p > 0.1 || p === 0 ? 0 : 1)}%`, 256, 64);
-    s.pct.material.map.needsUpdate = true;
+function paneles() {
+  if (!resCNN) return;
+  const tc = top(resCNN.probs), tr = resRF ? top(resRF.probs) : -1;
+  CLASES.forEach((_, k) => {
+    const f = $('barra-' + k);
+    f.querySelector('.p-cnn u').style.width = `${resCNN.probs[k] * 100}%`;
+    f.querySelector('.v-cnn').textContent = `${pc(resCNN.probs[k])} %`;
+    f.querySelector('.p-rf u').style.width = resRF ? `${resRF.probs[k] * 100}%` : '0';
+    f.querySelector('.v-rf').textContent = resRF ? `${pc(resRF.probs[k])} %` : '–';
+    f.classList.toggle('top-cnn', k === tc);
+    f.classList.toggle('top-rf', k === tr);
+    f.classList.toggle('real', k === claseReal);
   });
-}
 
-function seleccionarArbol(t) {
-  arbolSel = t;
-  marcador.position.copy(posArbol[t]);
-  if (!rfRes) return;
-  rfCam = camino(bosque, t, rfPix);
-  pintarEntradaRF();
-  panelArbol();
-}
-
-function actualizarRF(img) {
-  rfPix = Uint8Array.from(img, (v) => Math.round(v * 255));
-  rfRes = votar(bosque, rfPix);
-  for (let i = 0; i < NA; i++) {
-    const a = posArbol[i];
-    lPos.set([a.x + 0.22, a.y, a.z, RX.out - 0.3, -1.6, zOut(rfRes.porArbol[i])], i * 6);
+  // Resultado de cada arquitectura
+  const marca = (k) => (claseReal === null ? '' : k === claseReal ? '<span class="marca-ok ok">acierta</span>' : '<span class="marca-ok mal">falla</span>');
+  let html = '';
+  if (activas().includes('cnn')) {
+    html += `<div class="res-fila"><span class="modelo c-cnn">CNN</span><span class="clase">${CLASES[tc]}</span>${marca(tc)}<span class="metrica">softmax ${pc(resCNN.probs[tc])} %</span></div>`;
   }
-  geoVotos.attributes.position.needsUpdate = true;
-  seleccionarArbol(arbolSel);
-  aplicarRF(rfInicio === null ? NA : rfN);
-  panelRF();
+  if (activas().includes('rf')) {
+    html += resRF
+      ? `<div class="res-fila"><span class="modelo c-rf">RF</span><span class="clase">${CLASES[tr]}</span>${marca(tr)}<span class="metrica">${resRF.votos[tr]} de ${NA} votos (${pc(resRF.probs[tr])} %)</span></div>`
+      : `<div class="res-fila"><span class="modelo c-rf">RF</span><span class="metrica">descomprimiendo el bosque…</span></div>`;
+  }
+  const pie = [];
+  if (modo === 'comp' && resRF) pie.push(tc === tr ? `Las dos arquitecturas eligen <b>${CLASES[tc]}</b>.` : `Difieren: la CNN elige <b>${CLASES[tc]}</b> y el bosque <b>${CLASES[tr]}</b>.`);
+  pie.push(claseReal === null ? 'Sin clase real: la imagen no viene del conjunto de prueba.' : `Clase real: <b>${CLASES[claseReal]}</b>.`);
+  html += `<div class="res-pie">${pie.join(' ')}</div>`;
+  $('resultado').innerHTML = html;
+
+  // CNN
+  $('t-cnn').textContent = `${num(tCNN, 1)} ms`;
+  const mx = Math.max(...resCNN.z);
+  const orden = [...resCNN.z.keys()].sort((a, b) => resCNN.z[b] - resCNN.z[a]).slice(0, 4);
+  $('logits').innerHTML = '<tr><th>Prenda</th><th>z</th><th>e<sup>z−máx</sup></th><th>p</th></tr>' +
+    orden.map((k) => `<tr class="${k === tc ? 'gana' : ''}"><td>${CLASES[k]}</td><td>${num(resCNN.z[k])}</td><td>${num(Math.exp(resCNN.z[k] - mx), 3)}</td><td>${pc(resCNN.probs[k], 2)} %</td></tr>`).join('');
+
+  // Random Forest
+  if (resRF) {
+    $('t-rf').textContent = `${num(tRF, 1)} ms`;
+    const conVotos = [...resRF.votos.keys()].filter((k) => resRF.votos[k] > 0).sort((a, b) => resRF.votos[b] - resRF.votos[a]);
+    $('votos').innerHTML = '<tr><th>Prenda</th><th>votos</th><th>proporción</th></tr>' +
+      conVotos.map((k) => `<tr class="${k === tr ? 'gana' : ''}"><td>${CLASES[k]}</td><td>${resRF.votos[k]}</td><td>${pc(resRF.probs[k])} %</td></tr>`).join('');
+    panelArbol();
+  } else {
+    $('votos').innerHTML = '';
+    $('arbol').innerHTML = '<div class="vacio">El bosque se está descomprimiendo.</div>';
+  }
+  leyendaClave = '';
 }
 
-let imgActual = new Float32Array(784);
-function todo(img) {
-  imgActual = img;
-  actualizar(img);
-  if (bosque) actualizarRF(img);
-  panelComp();
-}
-
-// Animación: entrada -> importancia -> los árboles votan de a uno -> columnas
-const lim = (v) => Math.min(1, Math.max(0, v));
-function brilloRF(a, b) { rfIn.mesh.material.color.setScalar(0.08 + 0.92 * a); rfImp.mesh.material.color.setScalar(0.08 + 0.92 * b); }
-function animarRF(ahora) {
-  if (rfInicio === null || !rfRes) return;
-  const e = ahora - rfInicio;
-  const f = lim((e - 900) / 1800);
-  brilloRF(lim(e / 350), lim((e - 350) / 350));
-  const n = Math.round(f * NA);
-  if (n !== rfN) aplicarRF(n);
-  marcarEtapaRF(e < 350 ? 0 : e < 900 ? 1 : f < 1 ? 2 : 3);
-  if (e > 3100) { rfInicio = null; marcarEtapaRF(-1); }
-}
-function cortarAnimRF() {
-  if (rfInicio === null) return;
-  rfInicio = null; brilloRF(1, 1); marcarEtapaRF(-1);
-  if (rfRes) aplicarRF(NA);
-}
-
-// ---------- Paneles del bosque y de la comparación ----------
-const elFlujoRF = document.getElementById('flujo-rf');
-ETAPAS_RF.forEach((c, k) => {
-  const d = document.createElement('div');
-  d.className = 'capa'; d.id = 'etapa-' + k;
-  d.innerHTML = `<b>${c.nombre}</b><span>${c.forma}</span><p>${c.txt}</p>`;
-  elFlujoRF.appendChild(d);
-});
-function marcarEtapaRF(k) { ETAPAS_RF.forEach((_, i) => document.getElementById('etapa-' + i).classList.toggle('activa', i === k)); }
-
-const topDe = (a) => a.indexOf(Math.max(...a));
-function panelRF() {
-  const top = topDe(rfRes.probs);
-  rfRes.probs.forEach((p, k) => {
-    const f = document.getElementById('barra-' + k);
-    const u = f.querySelector('.br u');
-    u.style.width = (p * 100).toFixed(1) + '%';
-    u.style.background = hexClase(k);
-    u.style.opacity = k === top ? 1 : 0.55;
-    f.querySelector('em .r').textContent = pc(p) + '%';
-    f.classList.toggle('tr', k === top);
-  });
-  const orden = rfRes.probs.map((p, k) => [p, k]).sort((a, b) => b[0] - a[0]).slice(0, 3);
-  document.getElementById('mate-rf').innerHTML =
-    `<div>probabilidad = votos de la prenda / ${NA} árboles</div>` +
-    orden.filter(([p]) => p > 0).map(([p, k]) => `<div><span class="pto" style="background:${hexClase(k)}"></span>${CLASES[k]}: ${rfRes.votos[k]} de ${NA} = <b>${pc(p)}%</b></div>`).join('');
-  document.getElementById('resultado-rf').innerHTML = `<b class="et">Random Forest</b> ${CLASES[top]} con ${pc(rfRes.probs[top])}% de los votos`;
-}
-
+const CHEVRON = (d) => `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="${d}"/></svg>`;
 function panelArbol() {
-  const v = rfCam.clase;
-  const filas = rfCam.pasos.map((p) => {
-    const f = Math.floor(p.pixel / 28), c = p.pixel % 28;
-    const u = ((p.umbral + 0.5) / 255).toFixed(2).replace('.', ',');
-    return `<li>¿píxel (fila ${f}, col ${c}) &gt; ${u}? <span>vale ${(p.valor / 255).toFixed(2).replace('.', ',')} → ${p.izq ? 'No' : 'Sí'}</span></li>`;
+  const c = vRF.camino, a = vRF.seleccionado;
+  if (!c) return;
+  const filas = c.pasos.map((p) => {
+    const f = Math.floor(p.pixel / 28), co = p.pixel % 28;
+    return `<li><span>píxel (${f}, ${co}) &gt; ${num((p.umbral + 0.5) / 255)}? vale <b>${num(p.valor / 255)}</b>: ${p.izq ? 'no' : 'sí'}</span></li>`;
   }).join('');
-  document.getElementById('arbol').innerHTML =
-    `<div class="cab">Árbol <b>${arbolSel + 1}</b> de ${NA} · vota <b style="color:${hexClase(v)}">${CLASES[v]}</b> después de ${rfCam.pasos.length} preguntas` +
-    `<div class="fila"><button id="ant">◀</button><button id="sig">▶</button><button id="azar">Otro al azar</button></div></div>` +
-    `<ol class="preguntas">${filas}<li class="hoja">Hoja → <b style="color:${hexClase(v)}">${CLASES[v]}</b></li></ol>` +
-    `<p class="nota">En naranja, sobre la entrada, los píxeles que pregunta este árbol: mira píxeles sueltos, no formas.</p>`;
-  document.getElementById('ant').onclick = () => seleccionarArbol((arbolSel + NA - 1) % NA);
-  document.getElementById('sig').onclick = () => seleccionarArbol((arbolSel + 1) % NA);
-  document.getElementById('azar').onclick = () => seleccionarArbol(Math.floor(Math.random() * NA));
+  $('arbol').innerHTML =
+    `<div class="arbol-cab"><span>Árbol <b>${a + 1}</b> de ${NA}: vota <b class="c-rf">${CLASES[c.clase]}</b> tras ${c.pasos.length} preguntas</span>` +
+    `<div class="grupo"><button id="a-ant" aria-label="Árbol anterior">${CHEVRON('M10 3 5 8l5 5')}</button><button id="a-sig" aria-label="Árbol siguiente">${CHEVRON('M6 3l5 5-5 5')}</button><button id="a-azar">Al azar</button></div></div>` +
+    `<ol class="preguntas">${filas}<li class="hoja"><span>hoja: ${CLASES[c.clase]}</span></li></ol>` +
+    '<p class="nota">Hacé clic en cualquier árbol del bosque para ver sus preguntas. En la entrada se marcan en ámbar los píxeles que mira.</p>';
+  const ir = (t) => { vRF.seleccionar(t); panelArbol(); };
+  $('a-ant').onclick = () => ir((a + NA - 1) % NA);
+  $('a-sig').onclick = () => ir((a + 1) % NA);
+  $('a-azar').onclick = () => ir(Math.floor(Math.random() * NA));
 }
 
-function panelComp() {
-  const el = document.getElementById('veredicto');
-  if (!ultimo || !rfRes) { el.innerHTML = ''; return; }
-  const tc = topDe(ultimo.probs), tr = topDe(rfRes.probs);
-  let txt = tc === tr
-    ? `<b class="ok">Coinciden:</b> los dos dicen ${CLASES[tc]}.`
-    : `<b class="no">No coinciden:</b> la CNN dice ${CLASES[tc]} y el bosque ${CLASES[tr]}.`;
-  if (claseReal !== null) {
-    const marca = (k) => (k === claseReal ? '<b class="ok">acierta</b>' : '<b class="no">falla</b>');
-    txt += `<br>Real: <b>${CLASES[claseReal]}</b> · CNN ${marca(tc)} · bosque ${marca(tr)}`;
+// Convolución en vivo: los números reales del filtro más activo en la posición del kernel
+let convClave = null;
+function convVivo() {
+  const inf = vCNN.info(reloj.t);
+  const clave = inf ? `${inf.fila},${inf.col}` : `nada${vCNN.fMax}`;
+  if (clave === convClave) return;
+  convClave = clave;
+  const el = $('conv-vivo');
+  if (!inf) {
+    el.innerHTML = `<div class="vacio">Durante el paso 02 se ve acá la cuenta del filtro ${vCNN.fMax + 1} (el más activo) en cada posición del kernel.</div>`;
+    return;
   }
-  el.innerHTML = txt;
+  const m = (vals) => `<div class="m3">${vals.map((v) => `<span>${num(v)}</span>`).join('')}</div>`;
+  el.innerHTML = `<div class="vivo">Filtro ${inf.filtro + 1}, posición (${inf.fila}, ${inf.col})` +
+    `<div class="matrices">${m(inf.parche)}<span class="op">⊙</span>${m(inf.pesos)}</div>` +
+    `<div class="cuenta">Σ x·w + b = ${num(inf.suma - inf.sesgo, 3)} + ${num(inf.sesgo, 3)} = ${num(inf.suma, 3)}</div>` +
+    `<div class="cuenta">ReLU: ${num(inf.relu, 3)}</div></div>`;
 }
 
-// ---------- Modos: CNN, Random Forest o los dos ----------
-let modo = 'cnn';
-const VISTAS = {
-  cnn: VISTA,
-  rf: { pos: [-15, 9, 31], mira: [16, -0.5, 0] },
-  comp: { pos: [-18, 2, 42], mira: [16, -6.5, 0] },
-};
-function irAVista() { const v = VISTAS[modo]; cam.position.set(...v.pos); orbit.target.set(...v.mira); }
-const exCNN = pc(DATOS.exactitud, 2) + '%', exRF = pc(DATOS.rf.exactitud, 2) + '%';
+// ---------- Regla de pasos y leyenda ----------
+function armarReglas() {
+  const r = $('reglas');
+  r.innerHTML = '';
+  for (const k of activas()) {
+    const fila = document.createElement('div');
+    fila.className = `regla ${k}`;
+    let ini = 0;
+    SEQ[k].forEach((p, i) => {
+      const b = document.createElement('button');
+      b.style.setProperty('--d', p.dur);
+      b.innerHTML = `<span class="pista"><span></span></span><span class="et"><i>${dos(i + 1)}</i><span>${p.nombre}</span></span>`;
+      b.title = `${p.nombre}: ${p.txt}`;
+      const t0 = ini;
+      b.onclick = () => { reloj.t = t0; reproducir(); };
+      fila.appendChild(b);
+      ini += p.dur;
+    });
+    r.appendChild(fila);
+  }
+}
+let leyendaClave = '';
+function actualizarReglas() {
+  const actuales = [];
+  activas().forEach((k, ri) => {
+    const fila = $('reglas').children[ri];
+    if (!fila) return;
+    const u = progresos(SEQ[k], reloj.t);
+    let actual = SEQ[k].findIndex((p) => u[p.id] < 1);
+    if (actual < 0) actual = SEQ[k].length - 1;
+    SEQ[k].forEach((p, i) => {
+      const b = fila.children[i];
+      b.querySelector('.pista span').style.transform = `scaleX(${u[p.id]})`;
+      b.classList.toggle('actual', i === actual);
+    });
+    actuales.push([k, actual]);
+  });
+  const clave = actuales.map((a) => a.join(':')).join();
+  if (clave === leyendaClave) return;
+  leyendaClave = clave;
+  $('leyenda-paso').innerHTML = actuales.map(([k, i]) => {
+    const p = SEQ[k][i];
+    return `<div><span class="num c-${k}">${dos(i + 1)}</span><b>${p.nombre}</b>${p.txt}</div>`;
+  }).join('');
+}
+
+// ---------- Modos y controles ----------
 function setModo(m) {
   modo = m;
   document.body.dataset.modo = m;
-  cnnG.visible = m !== 'rf';
-  rfG.visible = m !== 'cnn';
-  rfG.position.y = m === 'comp' ? -13 : 0;
-  document.querySelectorAll('[data-en]').forEach((el) => { el.hidden = !el.dataset.en.split(' ').includes(m); });
   document.querySelectorAll('#modos button').forEach((b) => b.classList.toggle('on', b.dataset.modo === m));
-  document.getElementById('exactitud').textContent = m === 'cnn' ? `CNN ${exCNN}` : m === 'rf' ? `Random Forest ${exRF}` : `CNN ${exCNN} · Random Forest ${exRF}`;
-  irAVista();
+  document.querySelectorAll('[data-en]').forEach((el) => { el.hidden = !el.dataset.en.split(' ').includes(m); });
+  $('rot-a').hidden = $('rot-b').hidden = $('divisor').hidden = m !== 'comp';
+  armarReglas();
+  ubicarRotulos();
+  leyendaClave = '';
+  if (reloj.t > tFinal()) reloj.t = tFinal();
+  movida = false;
+  for (const k of activas()) irAVista(k);
+  paneles();
 }
 document.querySelectorAll('#modos button').forEach((b) => { b.onclick = () => setModo(b.dataset.modo); });
-
-// Clic en un árbol (sin arrastrar) para elegirlo
-let bajo = null;
-renderer.domElement.addEventListener('pointerdown', (e) => { bajo = [e.clientX, e.clientY]; });
-renderer.domElement.addEventListener('pointerup', (e) => {
-  if (!bajo || Math.hypot(e.clientX - bajo[0], e.clientY - bajo[1]) > 4 || !rfG.visible || !bosque) return;
-  const r = renderer.domElement.getBoundingClientRect();
-  mouse.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
-  ray.setFromCamera(mouse, cam);
-  const hit = ray.intersectObject(arboles, false)[0];
-  if (hit) seleccionarArbol(hit.instanceId);
+document.querySelectorAll('#velocidad button').forEach((b) => {
+  b.onclick = () => { reloj.vel = +b.dataset.v; document.querySelectorAll('#velocidad button').forEach((x) => x.classList.toggle('on', x === b)); };
 });
-function visibleDeVerdad(o) { for (; o; o = o.parent) if (!o.visible) return false; return true; }
+$('play').onclick = () => (reloj.play ? pausar() : reproducir());
+$('paso').onclick = paso;
+$('reiniciar').onclick = () => reproducir(true);
+$('rotar').onclick = () => {
+  const on = !ctrls.cnn.autoRotate;
+  for (const k in ctrls) ctrls[k].autoRotate = on;
+  $('rotar').classList.toggle('on', on);
+  $('rotar').setAttribute('aria-pressed', on);
+};
+$('vista').onclick = () => { movida = false; for (const k of activas()) irAVista(k); };
+document.querySelectorAll('[data-panel]').forEach((b) => {
+  b.onclick = () => $('app').classList.toggle(`sin-${b.dataset.panel}`);
+});
+window.addEventListener('keydown', (e) => {
+  if (e.target.closest('input, textarea, button, label')) return;
+  if (e.code === 'Space') { e.preventDefault(); reloj.play ? pausar() : reproducir(); }
+  if (e.code === 'ArrowRight') { e.preventDefault(); paso(); }
+});
 
-// El bosque viene comprimido con gzip: se descomprime con la API del navegador
+// ---------- Mouse sobre la escena: datos técnicos y elegir árbol ----------
+const ray = new THREE.Raycaster();
+const tip = $('tip');
+function golpe(e) {
+  const { reg, ndc } = regionEn(e.clientX, e.clientY);
+  ray.setFromCamera(ndc, camaras[reg.k]);
+  if (reg.k === 'cnn') return vCNN.hit(ray);
+  return resRF ? vRF.hit(ray) : null;
+}
+renderer.domElement.addEventListener('pointermove', (e) => {
+  if (e.buttons) { tip.style.display = 'none'; return; }
+  const h = golpe(e);
+  if (!h) { tip.style.display = 'none'; renderer.domElement.style.cursor = ''; return; }
+  tip.innerHTML = `<b>${h.titulo}</b><span>${h.detalle}</span>`;
+  tip.style.display = 'block';
+  tip.style.left = Math.min(window.innerWidth - 310, e.clientX + 14) + 'px';
+  tip.style.top = e.clientY + 14 + 'px';
+  renderer.domElement.style.cursor = h.arbol !== undefined ? 'pointer' : '';
+});
+renderer.domElement.addEventListener('pointerleave', () => { tip.style.display = 'none'; });
+let abajo = null;
+renderer.domElement.addEventListener('pointerdown', (e) => { abajo = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (!abajo || Math.hypot(e.clientX - abajo[0], e.clientY - abajo[1]) > 4) return;
+  const h = golpe(e);
+  if (h && h.arbol !== undefined) { vRF.seleccionar(h.arbol); panelArbol(); }
+});
+
+// ---------- Bucle ----------
+let antes = performance.now();
+function bucle(ahora) {
+  requestAnimationFrame(bucle);
+  const dt = Math.min(64, ahora - antes);
+  antes = ahora;
+  if (reloj.play) {
+    reloj.t += dt * reloj.vel;
+    if (reloj.t >= tFinal()) { reloj.t = tFinal(); pausar(); }
+  }
+  const act = activas();
+  if (act.includes('cnn')) { vCNN.aplicar(reloj.t); convVivo(); }
+  if (act.includes('rf') && resRF) vRF.aplicar(reloj.t);
+  actualizarReglas();
+  moverCamaras(ahora);
+  renderer.setScissorTest(true);
+  for (const r of regiones()) {
+    if (r.w < 2 || r.h < 2) continue;
+    ctrls[r.k].update();
+    proyeccion(camaras[r.k], r);
+    const cam = camaras[r.k];
+    vCNN.grupo.visible = r.k === 'cnn';
+    vRF.grupo.visible = r.k === 'rf';
+    // la niebla acompaña a la distancia de cada cámara: funde la retícula del piso sin apagar la escena
+    const d = cam.position.distanceTo(ctrls[r.k].target);
+    escena.fog.near = d * 0.9; escena.fog.far = d * 2.4;
+    const y = cont.clientHeight - r.top - r.h; // WebGL cuenta desde abajo
+    renderer.setViewport(0, y, r.w, r.h);
+    renderer.setScissor(0, y, r.w, r.h);
+    renderer.render(escena, cam);
+  }
+}
+
+// ---------- Arranque ----------
 async function cargarBosque() {
   const flujo = new Blob([b64ABytes(DATOS.rf.datos)]).stream().pipeThrough(new DecompressionStream('gzip'));
   const crudo = new Uint8Array(await new Response(flujo).arrayBuffer());
   bosque = construirBosque(crudo, DATOS.rf);
+  $('est-rf').textContent = 'listo';
+  $('led-rf').classList.remove('esperando');
   document.querySelectorAll('#modos button').forEach((b) => { b.disabled = false; });
-  document.getElementById('cargando').hidden = true;
-  todo(imgActual);
+  inferirRF();
+  paneles();
 }
 
-// ---------- Arranque ----------
-ajustar();
-function bucle(t) {
+async function iniciar() {
+  // los rótulos 3D se dibujan en canvas: hace falta que las fuentes estén cargadas antes
+  const fuentes = Promise.all([document.fonts.load('600 32px "Inter Variable"'), document.fonts.load('500 32px "JetBrains Mono Variable"')]);
+  await Promise.race([fuentes, new Promise((r) => setTimeout(r, 1500))]).catch(() => {});
+  vCNN = crearVistaCNN(modelo);
+  vRF = crearVistaRF(b64ABytes(DATOS.rf.importancia), NA);
+  escena.add(vCNN.grupo, vRF.grupo);
+  ajustar();
+  irAVista('cnn', true); irAVista('rf', true);
+  limpiarLienzo();
+  botonPlay();
+  setModo('cnn');
+  const c = DATOS.casos[0];
+  cargarPix(c.pix, `prueba n.º ${c.idx}`, c.clase);
   requestAnimationFrame(bucle);
-  avanzarAnimacion(t);
-  animarRF(t);
-  orbit.update();
-  renderer.render(escena, cam);
+  cargarBosque().catch((err) => { $('est-rf').textContent = 'no se pudo cargar'; $('led-rf').classList.remove('esperando'); console.error(err); });
 }
-requestAnimationFrame(bucle);
-setModo('cnn');
-cargarEjemplo(DATOS.ejemplos.find((e) => e.clase === 9));
-cargarBosque().catch((err) => { document.getElementById('cargando').textContent = 'No se pudo cargar el bosque: ' + err.message; });
-window.__viz = { todo, setModo, adelante: (img) => adelante(modelo, img), get ultimo() { return ultimo; }, get rf() { return rfRes; }, get bosque() { return bosque; } };
+iniciar();
+
+window.__viz = {
+  setModo, reproducir, pausar, paso, reloj, cargarMuestra,
+  get cnn() { return resCNN; }, get rf() { return resRF; }, get bosque() { return bosque; }, get vRF() { return vRF; }, get vCNN() { return vCNN; },
+};

@@ -3,108 +3,317 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CNN vs Random Forest</title>
+<title>Inside the Machine</title>
 <style>
-  :root { --bg:#05070d; --panel:rgba(12,17,28,.86); --borde:#1c2740; --txt:#cfd9ea; --tenue:#6c7b96; --cian:#36d6c3; --coral:#e4572e; }
-  * { box-sizing: border-box; }
-  html, body { margin:0; height:100%; background:var(--bg); color:var(--txt); font:13px/1.45 ui-monospace, Consolas, "Cascadia Mono", monospace; overflow:hidden; }
-  #escena { position:fixed; inset:0; }
-  #escena canvas { display:block; }
-  .panel { position:fixed; background:var(--panel); border:1px solid var(--borde); border-radius:8px; padding:12px; backdrop-filter:blur(6px); }
-  h2 { margin:0 0 8px; font-size:11px; letter-spacing:.12em; color:var(--tenue); font-weight:600; text-transform:uppercase; }
-  #izq { left:14px; top:14px; width:262px; bottom:14px; overflow:auto; }
-  #der { right:14px; top:14px; width:300px; bottom:14px; overflow:auto; }
-  #titulo { position:fixed; left:50%; top:14px; transform:translateX(-50%); text-align:center; pointer-events:none; }
-  #titulo b { font-size:15px; letter-spacing:.04em; }
-  #titulo span { display:block; color:var(--tenue); font-size:11px; }
-  #lienzo { width:100%; aspect-ratio:1; background:#000; border:1px solid var(--borde); border-radius:6px; touch-action:none; cursor:crosshair; display:block; }
-  button { background:#101a2d; color:var(--txt); border:1px solid var(--borde); border-radius:5px; padding:5px 8px; font:inherit; cursor:pointer; }
-  button:hover { border-color:var(--cian); }
-  button.on { background:#12303a; border-color:var(--cian); color:#fff; }
-  .fila { display:flex; flex-wrap:wrap; gap:5px; margin:8px 0; }
-  .fila button { flex:1 1 auto; font-size:12px; padding:4px 6px; }
-  .barra { display:grid; grid-template-columns:72px 1fr 44px; align-items:center; gap:6px; margin:3px 0; color:var(--tenue); font-size:12px; }
-  .pistas { display:flex; flex-direction:column; gap:2px; }
-  .barra i { height:8px; background:#0e1626; border-radius:4px; overflow:hidden; display:block; }
-  .barra u { display:block; height:100%; width:0; background:#2a9d8f; text-decoration:none; transition:width .15s; }
-  .barra em { font-style:normal; text-align:right; } .barra em b { font-weight:normal; display:block; }
-  .barra.tc .bc u { background:var(--coral); }
-  body[data-modo="cnn"] .br, body[data-modo="cnn"] em .r, body[data-modo="rf"] .bc, body[data-modo="rf"] em .c { display:none; }
-  body[data-modo="cnn"] .barra.tc, body[data-modo="rf"] .barra.tr, body[data-modo="comp"] .barra.tc, body[data-modo="comp"] .barra.tr { color:#fff; }
-  body[data-modo="comp"] .barra i { height:5px; } body[data-modo="comp"] .barra em b { font-size:11px; line-height:1.15; }
-  body[data-modo="comp"] em .c { color:#7fe3d6; } body[data-modo="comp"] em .r { color:#ffcf99; }
-  .leyenda { display:none; font-size:11px; color:var(--tenue); margin:-2px 0 4px; }
-  body[data-modo="comp"] .leyenda { display:block; }
-  .leyenda b { font-weight:normal; } .leyenda .c { color:#7fe3d6; } .leyenda .r { color:#ffcf99; }
-  .capa { padding:7px 9px; border:1px solid transparent; border-radius:6px; margin:4px 0; }
-  .capa b { color:#9fd8ff; } .capa span { float:right; color:var(--tenue); }
-  .capa p { margin:3px 0 0; color:var(--tenue); font-size:12px; }
-  .capa.activa { border-color:var(--cian); background:#0d2230; } .capa.activa p { color:var(--txt); }
-  #flujo-rf .capa b { color:#ffcf99; } #flujo-rf .capa.activa { border-color:#ffb066; background:#2a1c10; }
-  #mate div, #mate-rf div { margin:3px 0; color:var(--tenue); font-size:12px; } #mate b, #mate-rf b { color:#fff; }
-  .pto { display:inline-block; width:8px; height:8px; border-radius:2px; margin-right:6px; }
-  #arbol .cab { font-size:12px; } #arbol .cab b { color:#fff; }
-  .preguntas { margin:6px 0 0; padding-left:22px; max-height:190px; overflow:auto; font-size:11.5px; color:var(--txt); }
-  .preguntas li { margin:2px 0; } .preguntas li span { color:var(--tenue); } .preguntas li.hoja { color:#fff; }
-  #res-card { border-color:#2a4a44; }
-  #res-card > div { font-size:13.5px; margin:2px 0; }
-  .et { color:var(--cian); font-weight:600; margin-right:4px; } #resultado-rf .et { color:#ffb066; }
-  #veredicto { border-top:1px solid var(--borde); margin-top:6px !important; padding-top:6px; }
-  .ok { color:#7fe3a0; } .no { color:#ff8a6a; }
-  #modos { display:flex; border:1px solid var(--borde); border-radius:6px; overflow:hidden; }
-  #modos button { border:0; border-radius:0; background:var(--panel); } #modos button.on { background:#12303a; color:#fff; }
-  #modos button:disabled { color:#3a4760; cursor:wait; }
-  #cargando { color:var(--tenue); font-size:11px; align-self:center; }
-  [hidden] { display:none !important; }
-  #abajo { position:fixed; left:50%; bottom:16px; transform:translateX(-50%); display:flex; gap:8px; }
-  #abajo button { background:var(--panel); }
-  #tip { position:fixed; display:none; pointer-events:none; background:#0d1424; border:1px solid var(--cian); padding:3px 7px; border-radius:4px; font-size:12px; z-index:5; }
-  .nota { color:var(--tenue); font-size:11px; margin-top:8px; }
-  @media (max-width: 900px) { #der { display:none; } #izq { width:220px; } #titulo { display:none; } }
+/*FUENTES*/
+:root {
+  --fondo:#090D12; --sup:#111923; --sec:#17212B; --borde:#293641; --txt:#F3F6F8; --tenue:#91A0AC;
+  --cnn:#43D9E8; --rf:#F0A45A; --ok:#6FCF97; --mal:#E5736A;
+  --sans:"Inter Variable", Inter, "Segoe UI", system-ui, sans-serif;
+  --mono:"JetBrains Mono Variable", "JetBrains Mono", Consolas, monospace;
+  --izq:264px; --der:316px; --riel:44px;
+}
+* { box-sizing:border-box; }
+html, body { margin:0; height:100%; background:var(--fondo); color:var(--txt); font:14px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
+body { overflow:hidden; }
+button, input { font:inherit; color:inherit; }
+.mono { font-family:var(--mono); font-feature-settings:"zero" 0; }
+.c-cnn { color:var(--cnn); } .c-rf { color:var(--rf); }
+[hidden] { display:none !important; }
+:focus-visible { outline:2px solid var(--txt); outline-offset:2px; }
+
+.app { display:grid; height:100vh; grid-template-columns:var(--izq) minmax(0,1fr) var(--der); grid-template-rows:auto minmax(0,1fr);
+  grid-template-areas:"cab cab cab" "izq vis der"; transition:grid-template-columns .25s ease; }
+.app.sin-izq { --izq:var(--riel); } .app.sin-der { --der:var(--riel); }
+
+/* ---------- Cabecera ---------- */
+.cab { grid-area:cab; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:end; gap:24px; padding:18px 24px 16px; border-bottom:1px solid var(--borde); }
+.marca { display:flex; gap:18px; align-items:baseline; font-size:12px; color:var(--tenue); margin-bottom:6px; }
+.marca .lab { color:var(--txt); font-weight:600; letter-spacing:.08em; }
+.marca .exp { letter-spacing:.04em; }
+h1 { margin:0; font-size:40px; line-height:1; font-weight:700; letter-spacing:-.025em; }
+.titular { display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; }
+.titular p { margin:0; font-size:16px; color:var(--tenue); }
+.estado { display:flex; gap:28px; margin:0; font-size:12.5px; }
+.estado dt { color:var(--tenue); margin-bottom:3px; display:flex; align-items:center; gap:7px; }
+.estado dd { margin:0; font-family:var(--mono); font-size:13px; }
+.led { width:7px; height:7px; border-radius:50%; background:var(--borde); }
+.led.cnn { background:var(--cnn); } .led.rf { background:var(--rf); }
+.led.esperando { background:transparent; border:1px solid var(--rf); animation:latido 1.2s ease-in-out infinite; }
+@keyframes latido { 50% { opacity:.3; } }
+
+/* ---------- Paneles ---------- */
+.panel { background:var(--sup); display:flex; flex-direction:column; min-height:0; position:relative; }
+.panel.izq { grid-area:izq; border-right:1px solid var(--borde); }
+.panel.der { grid-area:der; border-left:1px solid var(--borde); }
+.panel-cab { display:flex; align-items:center; justify-content:space-between; padding:14px 18px 10px; }
+.panel-cab h2 { margin:0; font-size:15px; font-weight:600; }
+.panel-cuerpo { overflow:auto; padding:0 18px 22px; scrollbar-width:thin; scrollbar-color:var(--borde) transparent; }
+.panel h3 { font-size:13px; font-weight:600; margin:22px 0 10px; display:flex; align-items:center; gap:8px; }
+.panel h4 { font-size:12px; font-weight:500; color:var(--tenue); margin:16px 0 6px; }
+.plegar { background:none; border:1px solid transparent; border-radius:4px; padding:4px; cursor:pointer; color:var(--tenue); display:grid; place-items:center; }
+.plegar:hover { color:var(--txt); border-color:var(--borde); }
+.riel { display:none; position:absolute; inset:0; background:var(--sup); border:0; cursor:pointer; color:var(--tenue); writing-mode:vertical-rl; font-size:13px; font-weight:500; letter-spacing:.02em; padding:18px 0; }
+.riel:hover { color:var(--txt); background:var(--sec); }
+.sin-izq .izq .riel, .sin-der .der .riel { display:block; }
+.sin-izq .izq .panel-cab, .sin-izq .izq .panel-cuerpo, .sin-der .der .panel-cab, .sin-der .der .panel-cuerpo { visibility:hidden; }
+
+/* Entrada */
+.lienzo-marco { position:relative; border:1px solid var(--borde); border-radius:4px; overflow:hidden; background:#000; }
+#lienzo { display:block; width:100%; aspect-ratio:1; touch-action:none; cursor:crosshair; }
+.reticula { position:absolute; inset:0; pointer-events:none; background-image:linear-gradient(to right, rgba(145,160,172,.10) 1px, transparent 1px), linear-gradient(to bottom, rgba(145,160,172,.10) 1px, transparent 1px); background-size:calc(100% / 28) calc(100% / 28); }
+.kv { margin:12px 0 0; display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:12.5px; }
+.kv div { display:contents; }
+.kv dt { color:var(--tenue); font-family:var(--sans); }
+.kv dd { margin:0; text-align:right; font-family:var(--mono); }
+.acciones { display:flex; flex-wrap:wrap; gap:6px; margin-top:14px; }
+.boton, .chips button, .acciones button { background:var(--sec); border:1px solid var(--borde); border-radius:4px; padding:6px 10px; font-size:12.5px; cursor:pointer; line-height:1.3; }
+.boton:hover, .chips button:hover, .acciones button:hover { border-color:var(--tenue); }
+.acciones > * { flex:1 1 auto; text-align:center; }
+.ayuda { font-size:12px; color:var(--tenue); margin:10px 0 0; }
+.chips { display:flex; flex-wrap:wrap; gap:5px; }
+.chips button { padding:5px 8px; }
+.chips button.on { border-color:var(--txt); }
+
+/* Barras de clasificación */
+.leyenda { display:flex; gap:14px; font-size:11.5px; margin-bottom:8px; }
+.leyenda span::before { content:""; display:inline-block; width:10px; height:3px; margin-right:6px; vertical-align:middle; background:currentColor; }
+.barra { display:grid; grid-template-columns:76px 1fr 54px; gap:8px; align-items:center; font-size:12.5px; color:var(--tenue); padding:3px 0; }
+.barra .nombre { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.barra.real .nombre::after { content:"real"; font-family:var(--mono); font-size:10px; color:var(--ok); margin-left:6px; }
+.pistas { display:flex; flex-direction:column; gap:3px; }
+.pistas i { display:block; height:5px; background:var(--sec); border-radius:1px; overflow:hidden; }
+.pistas u { display:block; height:100%; width:0; text-decoration:none; transition:width .25s ease; }
+.pistas .p-cnn u { background:var(--cnn); opacity:.45; } .pistas .p-rf u { background:var(--rf); opacity:.45; }
+.barra.top-cnn .p-cnn u, .barra.top-rf .p-rf u { opacity:1; }
+.barra.top-cnn .nombre, .barra.top-rf .nombre { color:var(--txt); }
+.barra .vals { font-family:var(--mono); font-size:11.5px; text-align:right; line-height:1.25; }
+.barra .vals b { display:block; font-weight:400; }
+body[data-modo="cnn"] .p-rf, body[data-modo="cnn"] .vals .v-rf, body[data-modo="cnn"] .leyenda .c-rf,
+body[data-modo="rf"] .p-cnn, body[data-modo="rf"] .vals .v-cnn, body[data-modo="rf"] .leyenda .c-cnn { display:none; }
+body:not([data-modo="comp"]) .pistas i { height:7px; }
+
+/* ---------- Visualización ---------- */
+.vis { grid-area:vis; position:relative; min-width:0; min-height:0; overflow:hidden; }
+#escena { position:absolute; inset:0; }
+#escena canvas { display:block; }
+.rot-mitad { position:absolute; top:14px; font-size:13px; font-weight:600; display:flex; align-items:center; gap:8px; pointer-events:none; }
+.rot-mitad::before { content:""; width:14px; height:2px; background:currentColor; }
+#rot-a, #rot-b { left:16px; } #rot-a { top:14px; }
+#divisor { position:absolute; left:0; right:0; height:1px; background:var(--borde); pointer-events:none; }
+.ayuda-3d { position:absolute; top:14px; right:16px; font-size:12px; color:var(--tenue); pointer-events:none; }
+.controles { position:absolute; left:16px; right:16px; bottom:14px; display:flex; flex-direction:column; gap:10px; pointer-events:none; }
+.controles > * { pointer-events:auto; }
+.leyenda-paso { font-size:13px; color:var(--tenue); max-width:72ch; display:flex; flex-direction:column; gap:3px; pointer-events:none; }
+.leyenda-paso b { color:var(--txt); font-weight:600; margin-right:6px; }
+.leyenda-paso .num { font-family:var(--mono); margin-right:8px; }
+.regla { display:flex; gap:3px; }
+.regla button { flex:1 1 0; min-width:0; text-align:left; background:none; border:0; padding:0; cursor:pointer; color:var(--tenue); font-size:11.5px; }
+.regla .pista { display:block; height:3px; background:var(--borde); margin-bottom:6px; position:relative; overflow:hidden; }
+.regla .pista span { position:absolute; inset:0; transform-origin:left; transform:scaleX(0); }
+.regla.cnn .pista span { background:var(--cnn); } .regla.rf .pista span { background:var(--rf); }
+.regla .et { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.regla .et i { font-style:normal; font-family:var(--mono); margin-right:6px; }
+.regla button.actual { color:var(--txt); }
+.regla button:hover { color:var(--txt); }
+.transporte { display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+.grupo { display:flex; background:var(--sup); border:1px solid var(--borde); border-radius:5px; overflow:hidden; }
+.grupo button { background:none; border:0; border-right:1px solid var(--borde); padding:6px 10px; font-size:12.5px; cursor:pointer; display:flex; align-items:center; gap:7px; white-space:nowrap; }
+.grupo button:last-child { border-right:0; }
+.grupo button:hover:not(:disabled) { background:var(--sec); }
+.grupo button.on { background:var(--sec); color:var(--txt); box-shadow:inset 0 -2px 0 var(--txt); }
+.grupo button[data-modo="cnn"].on { box-shadow:inset 0 -2px 0 var(--cnn); }
+.grupo button[data-modo="rf"].on { box-shadow:inset 0 -2px 0 var(--rf); }
+.grupo button:disabled { color:#53616d; cursor:progress; }
+.grupo svg { width:14px; height:14px; }
+.espacio { flex:1; }
+#tip { position:fixed; display:none; pointer-events:none; background:var(--sec); border:1px solid var(--borde); border-radius:4px; padding:7px 10px; font-size:12px; z-index:20; max-width:300px; }
+#tip b { display:block; font-weight:600; margin-bottom:2px; }
+#tip span { font-family:var(--mono); color:var(--tenue); font-size:11.5px; }
+
+/* ---------- Análisis ---------- */
+.res { border:1px solid var(--borde); border-radius:5px; }
+.res-fila { display:grid; grid-template-columns:auto 1fr auto; gap:4px 12px; align-items:baseline; padding:12px 14px; }
+.res-fila + .res-fila { border-top:1px solid var(--borde); }
+.res-fila .modelo { font-size:12px; font-weight:600; grid-row:span 2; align-self:center; width:30px; }
+.res-fila .clase { font-size:22px; font-weight:650; letter-spacing:-.015em; line-height:1.15; }
+.res-fila .metrica { grid-column:2 / 4; font-family:var(--mono); font-size:12px; color:var(--tenue); }
+.res-fila .marca-ok { font-size:12px; font-family:var(--mono); }
+.res-pie { border-top:1px solid var(--borde); padding:10px 14px; font-size:12.5px; color:var(--tenue); }
+.res-pie b { color:var(--txt); font-weight:600; }
+.ok { color:var(--ok); } .mal { color:var(--mal); }
+.tag { font-family:var(--mono); font-size:11px; font-weight:500; padding:1px 6px; border-radius:3px; border:1px solid currentColor; }
+.tag.cnn { color:var(--cnn); } .tag.rf { color:var(--rf); }
+.sec-modelo { margin-top:6px; border-top:1px solid var(--borde); }
+.formula { font-family:var(--mono); font-size:13px; background:var(--sec); border-radius:4px; padding:10px 12px; }
+.formula sub, .formula sup { font-size:9.5px; }
+.tabla { width:100%; border-collapse:collapse; font-family:var(--mono); font-size:12px; }
+.tabla th { font-family:var(--sans); font-weight:500; color:var(--tenue); text-align:right; padding:3px 0; border-bottom:1px solid var(--borde); }
+.tabla th:first-child, .tabla td:first-child { text-align:left; font-family:var(--sans); }
+.tabla td { text-align:right; padding:4px 0; border-bottom:1px solid #1c2731; }
+.tabla tr.gana td { color:var(--txt); } .tabla td { color:var(--tenue); }
+.nota { font-size:12px; color:var(--tenue); margin:12px 0 0; line-height:1.5; }
+.vivo { background:var(--sec); border-radius:4px; padding:10px 12px; font-family:var(--mono); font-size:11.5px; }
+.vivo .matrices { display:grid; grid-template-columns:1fr auto 1fr; gap:8px; align-items:center; margin:8px 0; }
+.vivo .m3 { display:grid; grid-template-columns:repeat(3, 1fr); gap:2px; }
+.vivo .m3 span { padding:1px 3px; text-align:right; background:var(--sup); border-radius:2px; min-width:0; font-size:10.5px; }
+.vivo .op { color:var(--tenue); }
+.vivo .cuenta { color:var(--txt); }
+.vacio { font-size:12px; color:var(--tenue); background:var(--sec); border-radius:4px; padding:10px 12px; }
+.arbol-cab { font-size:12.5px; display:flex; flex-direction:column; align-items:flex-start; gap:8px; }
+.arbol-cab .grupo button { padding:4px 9px; }
+.preguntas { list-style:none; margin:10px 0 0; padding:0; font-family:var(--mono); font-size:11.5px; max-height:220px; overflow:auto; counter-reset:p; }
+.preguntas li { display:grid; grid-template-columns:24px 1fr; padding:3px 0; border-bottom:1px solid #1c2731; color:var(--tenue); counter-increment:p; }
+.preguntas li::before { content:counter(p, decimal-leading-zero); color:#53616d; }
+.preguntas li b { color:var(--txt); font-weight:400; }
+.preguntas li.hoja { color:var(--rf); } .preguntas li.hoja::before { content:"→"; }
+
+/* ---------- Pantallas medianas y chicas ---------- */
+@media (max-width:1280px) { :root { --izq:248px; --der:296px; } h1 { font-size:32px; } .estado { gap:18px; } }
+@media (max-width:1024px) {
+  body { overflow:auto; }
+  .app { height:auto; grid-template-columns:1fr 1fr; grid-template-rows:auto 64vh auto; grid-template-areas:"cab cab" "vis vis" "izq der"; }
+  .app.sin-izq, .app.sin-der { --izq:auto; --der:auto; }
+  .plegar, .riel { display:none !important; }
+  .sin-izq .izq .panel-cab, .sin-izq .izq .panel-cuerpo, .sin-der .der .panel-cab, .sin-der .der .panel-cuerpo { visibility:visible; }
+  .panel.izq, .panel.der { border:0; border-top:1px solid var(--borde); }
+  .panel.der { border-left:1px solid var(--borde); }
+  .panel-cuerpo { overflow:visible; }
+  .cab { grid-template-columns:1fr; align-items:start; }
+}
+@media (max-width:700px) {
+  .app { grid-template-columns:1fr; grid-template-rows:auto 72vh auto auto; grid-template-areas:"cab" "vis" "izq" "der"; }
+  .panel.der { border-left:0; }
+  .cab { padding:14px 16px; gap:12px; }
+  h1 { font-size:28px; } .titular p { font-size:14px; }
+  .marca { flex-direction:column; gap:2px; }
+  .estado { flex-wrap:wrap; gap:10px 20px; }
+  .controles { left:10px; right:10px; bottom:10px; }
+  .regla .et span { display:none; }
+  .leyenda-paso { display:none; }
+  .ayuda-3d { display:none; }
+  .lienzo-marco { max-width:300px; margin:0 auto; }
+}
+@media (prefers-reduced-motion: reduce) { * { transition:none !important; animation:none !important; } }
 </style>
 </head>
-<body>
-<div id="escena"></div>
-<div id="titulo"><b>FashionMNIST · CNN vs Random Forest</b><span>exactitud en prueba: <span id="exactitud" style="display:inline;color:#36d6c3"></span> · arrastrá para girar, rueda para acercar</span></div>
+<body data-modo="cnn">
+<div class="app" id="app">
+  <header class="cab">
+    <div>
+      <div class="marca"><span class="lab">COMPUTATIONAL INTELLIGENCE LAB</span><span class="exp mono">FASHIONMNIST / EXPERIMENT 001</span></div>
+      <div class="titular"><h1>INSIDE THE MACHINE.</h1><p>Convolutional Neural Network vs Random Forest.</p></div>
+    </div>
+    <dl class="estado">
+      <div><dt><span class="led cnn"></span>CNN</dt><dd id="est-cnn">lista</dd></div>
+      <div><dt><span class="led rf esperando" id="led-rf"></span>Random Forest</dt><dd id="est-rf">descomprimiendo</dd></div>
+      <div><dt>Exactitud en prueba</dt><dd><span class="c-cnn" id="ex-cnn"></span> <span style="color:var(--tenue)">/</span> <span class="c-rf" id="ex-rf"></span></dd></div>
+    </dl>
+  </header>
 
-<div class="panel" id="izq">
-  <h2>Dibujá una prenda</h2>
-  <canvas id="lienzo" width="224" height="224"></canvas>
-  <div class="fila"><button id="limpiar">Limpiar</button></div>
-  <h2>O cargá un ejemplo real</h2>
-  <div class="fila" id="ejemplos"></div>
-  <h2 style="margin-top:12px">Casos de la presentación</h2>
-  <div class="fila" id="casos"></div>
-  <h2 style="margin-top:12px">Probabilidades</h2>
-  <div class="leyenda">arriba <b class="c">CNN</b> · abajo <b class="r">Random Forest</b></div>
-  <div id="barras"></div>
-  <p class="nota">Dibujar con el mouse es menos preciso que las fotos reales del dataset: el modelo se entrenó con imágenes de prendas, no con trazos.</p>
-</div>
+  <aside class="panel izq" aria-label="Entrada">
+    <div class="panel-cab"><h2>Entrada</h2><button class="plegar" data-panel="izq" aria-label="Ocultar el panel de entrada" title="Ocultar panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M10 3 5 8l5 5"/></svg></button></div>
+    <div class="panel-cuerpo">
+      <div class="lienzo-marco"><canvas id="lienzo" width="224" height="224" aria-label="Imagen de entrada. Podés dibujar encima con el mouse."></canvas><div class="reticula"></div></div>
+      <dl class="kv">
+        <div><dt>Resolución</dt><dd>28 × 28 px</dd></div>
+        <div><dt>Canal</dt><dd>1 (gris)</dd></div>
+        <div><dt>Origen</dt><dd id="origen">—</dd></div>
+        <div><dt>Clase real</dt><dd id="real">—</dd></div>
+      </dl>
+      <div class="acciones">
+        <button id="limpiar" title="Borrar la imagen para dibujar desde cero">Limpiar</button>
+        <button id="aleatoria" title="Una imagen al azar entre 500 del conjunto de prueba">Muestra aleatoria</button>
+        <label class="boton" for="archivo" title="Se convierte a 28 × 28 en gris">Cargar imagen</label>
+        <input type="file" id="archivo" accept="image/*" hidden>
+      </div>
+      <p class="ayuda">Dibujá sobre la imagen con el mouse, o elegí una prenda del conjunto de prueba.</p>
+      <h3>Categoría</h3>
+      <div class="chips" id="categorias"></div>
+      <h3>Casos de la presentación</h3>
+      <div class="chips" id="casos"></div>
+      <h3>Clasificación</h3>
+      <div class="leyenda"><span class="c-cnn">softmax CNN</span><span class="c-rf">proporción de votos RF</span></div>
+      <div id="barras"></div>
+    </div>
+    <button class="riel" data-panel="izq" aria-label="Mostrar el panel de entrada">Entrada</button>
+  </aside>
 
-<div class="panel" id="der">
-  <div data-en="cnn"><h2>Flujo de datos · CNN</h2><div id="flujo"></div></div>
-  <div data-en="rf"><h2>Flujo de datos · Random Forest</h2><div id="flujo-rf"></div></div>
-  <div data-en="cnn comp"><h2 style="margin-top:12px">Matemática en vivo · CNN</h2><div id="mate"></div></div>
-  <div data-en="rf comp"><h2 style="margin-top:12px">Votación · Random Forest</h2><div id="mate-rf"></div></div>
-  <div data-en="rf comp"><h2 style="margin-top:12px">Un árbol por dentro</h2><div id="arbol"></div></div>
-  <div id="res-card" class="panel" style="position:static;margin-top:12px;padding:10px">
-    <div id="resultado" data-en="cnn comp"></div>
-    <div id="resultado-rf" data-en="rf comp"></div>
-    <div id="veredicto" data-en="comp"></div>
-  </div>
-</div>
+  <main class="vis" id="vis">
+    <div id="escena"></div>
+    <div class="rot-mitad c-cnn" id="rot-a" hidden>CNN</div>
+    <div class="rot-mitad c-rf" id="rot-b" hidden>Random Forest</div>
+    <div id="divisor" hidden></div>
+    <div class="ayuda-3d">Arrastrá para girar, rueda para acercar</div>
+    <div class="controles">
+      <div class="leyenda-paso" id="leyenda-paso"></div>
+      <div id="reglas"></div>
+      <div class="transporte">
+        <div class="grupo">
+          <button id="play" aria-label="Reproducir" title="Reproducir o pausar (barra espaciadora)"></button>
+          <button id="paso" title="Avanzar un paso (flecha derecha)"><svg viewBox="0 0 16 16" fill="currentColor"><path d="M3 3l7 5-7 5zM11 3h2v10h-2z"/></svg>Paso</button>
+          <button id="reiniciar" title="Volver al principio y reproducir"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3"/></svg>Reiniciar</button>
+        </div>
+        <div class="grupo" id="velocidad" role="group" aria-label="Velocidad">
+          <button data-v="0.5">0,5×</button><button data-v="1" class="on">1×</button><button data-v="2">2×</button>
+        </div>
+        <div class="espacio"></div>
+        <div class="grupo" id="modos" role="group" aria-label="Modo de visualización">
+          <button data-modo="cnn" class="on">CNN</button><button data-modo="rf" disabled>Random Forest</button><button data-modo="comp" disabled>Comparar</button>
+        </div>
+        <div class="grupo">
+          <button id="rotar" aria-pressed="false" title="Girar la cámara sola">Girar</button>
+          <button id="vista" title="Volver al encuadre inicial">Vista inicial</button>
+        </div>
+      </div>
+    </div>
+    <div id="tip" role="tooltip"></div>
+  </main>
 
-<div id="abajo">
-  <div id="modos"><button data-modo="cnn" class="on">CNN</button><button data-modo="rf" disabled>Random Forest</button><button data-modo="comp" disabled>Comparar</button></div>
-  <span id="cargando">cargando el bosque…</span>
-  <button id="replay">▶ Recorrido</button>
-  <button id="rotar">⟳ Girar solo</button>
-  <button id="vista">Vista inicial</button>
+  <aside class="panel der" aria-label="Análisis">
+    <div class="panel-cab"><h2>Análisis</h2><button class="plegar" data-panel="der" aria-label="Ocultar el panel de análisis" title="Ocultar panel"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 3l5 5-5 5"/></svg></button></div>
+    <div class="panel-cuerpo">
+      <div class="res" id="resultado"></div>
+
+      <section class="sec-modelo" data-en="cnn comp">
+        <h3><span class="tag cnn">CNN</span>Red neuronal convolucional</h3>
+        <dl class="kv">
+          <div><dt>Exactitud en prueba</dt><dd id="m-ex-cnn"></dd></div>
+          <div><dt>Parámetros</dt><dd id="m-par"></dd></div>
+          <div><dt>Inferencia en este navegador</dt><dd id="t-cnn">—</dd></div>
+        </dl>
+        <h4>Fórmula</h4>
+        <div class="formula">p<sub>k</sub> = e<sup>z<sub>k</sub></sup> / Σ<sub>j</sub> e<sup>z<sub>j</sub></sup></div>
+        <h4>Datos: logits y softmax</h4>
+        <table class="tabla" id="logits"></table>
+        <h4>Convolución en vivo</h4>
+        <div id="conv-vivo"></div>
+        <p class="nota">La salida softmax suma 1, pero no está calibrada: la red suele dar valores cercanos a 100 % incluso cuando se equivoca.</p>
+      </section>
+
+      <section class="sec-modelo" data-en="rf comp">
+        <h3><span class="tag rf">RF</span>Random Forest</h3>
+        <dl class="kv">
+          <div><dt>Exactitud en prueba</dt><dd id="m-ex-rf"></dd></div>
+          <div><dt>Árboles</dt><dd id="m-arb"></dd></div>
+          <div><dt>Nodos en total</dt><dd id="m-nod"></dd></div>
+          <div><dt>Inferencia en este navegador</dt><dd id="t-rf">—</dd></div>
+        </dl>
+        <h4>Fórmula</h4>
+        <div class="formula" id="formula-rf"></div>
+        <h4>Datos: votos por prenda</h4>
+        <table class="tabla" id="votos"></table>
+        <h4>Árbol seleccionado</h4>
+        <div id="arbol"></div>
+        <p class="nota">El bosque no calcula una probabilidad: reporta qué proporción de los árboles votó cada prenda.</p>
+      </section>
+    </div>
+    <button class="riel" data-panel="der" aria-label="Mostrar el panel de análisis">Análisis</button>
+  </aside>
 </div>
-<div id="tip"></div>
 
 <script>window.DATOS = /*DATOS*/;</script>
-<script>window.addEventListener('error',function(e){var p=document.createElement('pre');p.style.cssText='position:fixed;left:300px;top:60px;right:20px;color:#ff9a8a;white-space:pre-wrap;z-index:9';p.textContent='Error: '+e.message+(e.error&&e.error.stack?'\n'+e.error.stack.slice(0,500):'');document.body.appendChild(p);});</script>
+<script>window.addEventListener('error',function(e){var p=document.createElement('pre');p.style.cssText='position:fixed;left:16px;bottom:16px;right:16px;color:#E5736A;background:#111923;border:1px solid #293641;padding:10px;white-space:pre-wrap;z-index:99;font:12px monospace';p.textContent='Error: '+e.message+(e.error&&e.error.stack?'\n'+e.error.stack.slice(0,500):'');document.body.appendChild(p);});</script>
 <script>/*BUNDLE*/</script>
 </body>
 </html>

@@ -1,0 +1,9 @@
+# Solo se versiona el visualizador y los scripts que generan sus datos.
+/*
+!/.gitignore
+!/README.md
+!/visualizador/
+!/entrenar_y_exportar.py
+!/entrenar_rf.py
+!/exportar_rf.py
+node_modules/
